@@ -1,6 +1,7 @@
 """Session discovery, JSONL parsing, and caching."""
 
 import json
+import math
 import os
 import hashlib
 import subprocess
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+import numpy as np
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -646,8 +649,6 @@ def _new_scan_stats() -> dict:
 
 def _finalize_scan_stats(stats: dict, file_size: int) -> dict:
     """Convert raw scan accumulators into the feature dict used by classify_session + ML."""
-    import math
-    import numpy as np
 
     user = stats["user_messages"]
     effective = stats["_effective_users"]  # non-empty, non-prompt

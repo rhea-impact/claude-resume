@@ -1,40 +1,45 @@
-#!/usr/bin/env python3
-"""
-cc-restore — Post-crash Claude Code session picker.
+"""CLI entry point for claude-resume."""
+
+import subprocess
+import sys
+import termios
+
+from .sessions import (
+    SessionCache,
+    SessionOps,
+    find_all_sessions,
+    find_recent_sessions,
+    get_git_context,
+    get_label_deep,
+    parse_session,
+    relative_time,
+    shorten_path,
+    MAX_SESSIONS_ALL,
+)
+from .summarize import analyze_patterns, summarize_deep, summarize_quick
+from .ui import SessionPickerApp
+
+DEFAULT_HOURS = 4
+
+USAGE = """\
+claude-resume — Post-crash Claude Code session picker.
 
 Finds your most recently active Claude Code sessions, uses AI to summarize
 what each one was doing, and copies the resume command to your clipboard.
 
 Usage:
-    cc-restore              # Show sessions from last 4 hours
-    cc-restore 24           # Show sessions from last 24 hours
-    cc-restore --all        # Show all sessions (up to 50)
-    cc-restore --cache-all  # Background-index every session you've ever had
+    claude-resume              # Show sessions from last 4 hours
+    claude-resume 24           # Show sessions from last 24 hours
+    claude-resume --all        # Show all sessions (up to 200)
+    claude-resume --cache-all  # Background-index every session you've ever had
 """
 
-import subprocess
-import sys
-import os
 
-# Add the script's directory to the path so claude_resume package is importable
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-
-from claude_resume.sessions import (
-    SessionCache, SessionOps, find_all_sessions, find_recent_sessions,
-    get_git_context, parse_session, shorten_path, relative_time,
-    get_label_deep, MAX_SESSIONS_ALL,
-)
-from claude_resume.summarize import summarize_quick, summarize_deep, analyze_patterns
-from claude_resume.ui import SessionPickerApp
-
-DEFAULT_HOURS = 4
-
-
-def copy_to_clipboard(text: str):
+def _copy_to_clipboard(text: str):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
 
 
-def cache_all_sessions():
+def _cache_all_sessions():
     """Background-index every session that doesn't have a cached summary."""
     cache = SessionCache()
     all_sessions = find_all_sessions()
@@ -63,7 +68,6 @@ def cache_all_sessions():
             cache.set(s["session_id"], ck, "summary", summary)
             full = (search_text + f" {s['project_dir']} {s['session_id']}").lower()
             cache.set(s["session_id"], ck, "search_text", full)
-            # Pre-compute classification (with Opus for gray zone)
             get_label_deep(s["file"], cache)
             title = summary.get("title", "?")
             print(f" \033[32m{title}\033[0m", flush=True)
@@ -77,7 +81,7 @@ def cache_all_sessions():
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--cache-all":
-        cache_all_sessions()
+        _cache_all_sessions()
         sys.exit(0)
 
     hours = DEFAULT_HOURS
@@ -88,24 +92,21 @@ def main():
             hours = 8760
             show_all = True
         elif arg in ("--help", "-h"):
-            print(__doc__)
+            print(USAGE)
             sys.exit(0)
         else:
             try:
                 hours = float(arg)
             except ValueError:
-                print("Usage: cc-restore [hours|--all|--cache-all]")
+                print("Usage: claude-resume [hours|--all|--cache-all]")
                 sys.exit(1)
 
     max_sessions = MAX_SESSIONS_ALL if show_all else None
-    if max_sessions:
-        sessions = find_recent_sessions(hours, max_sessions=max_sessions)
-    else:
-        sessions = find_recent_sessions(hours)
+    sessions = find_recent_sessions(hours, max_sessions=max_sessions) if max_sessions else find_recent_sessions(hours)
 
     if not sessions:
         print(f"  No sessions found in the last {int(hours)} hours.")
-        print(f"  Try: cc-restore --all")
+        print("  Try: claude-resume --all")
         sys.exit(0)
 
     cache = SessionCache()
@@ -118,18 +119,14 @@ def main():
         analyze_patterns=analyze_patterns,
     )
 
-    # Build summaries list: cached ones filled in, uncached as None (TUI will background-process)
     summaries = []
     for s in sessions:
         ck = cache.cache_key(s["file"])
         cached = cache.get(s["session_id"], ck, "summary")
-        summaries.append(cached)  # None if not cached
+        summaries.append(cached)
 
-    # Flush any buffered stdin before TUI
-    import termios
     termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
 
-    # Launch TUI immediately — uncached sessions get summarized in background
     app = SessionPickerApp(sessions, summaries, ops)
     app.run()
 
@@ -139,10 +136,6 @@ def main():
     action, idx, cmd = app.result_data
 
     if action == "select":
-        copy_to_clipboard(cmd)
+        _copy_to_clipboard(cmd)
         print(f"\n  \033[1;32m✓ Copied to clipboard:\033[0m")
         print(f"    {cmd}\n")
-
-
-if __name__ == "__main__":
-    main()

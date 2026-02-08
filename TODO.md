@@ -1,4 +1,4 @@
-# cc-restore — Feature Roadmap
+# claude-resume — Feature Roadmap
 
 ## Implemented
 - [x] AI-powered session summaries (quick + deep dive)
@@ -18,7 +18,7 @@
   - [x] `PreviewMode` enum — explicit state machine for preview pane (SUMMARY vs PATTERNS)
   - [x] Single-pass JSONL parsing — `parse_session()` combines old `extract_context` + `extract_searchable_text`
   - [x] Error visibility — `_show_preview_error()` surfaces background task failures in the UI
-  - [x] Slim entry point — `cc-restore` is just a launcher, all logic lives in the package
+  - [x] Slim entry point — `claude-resume` is just a launcher, all logic lives in the package
   - [x] All operations non-blocking — patterns, search indexing, deep dives all run as background tasks
   - [x] `--all` mode shows up to 50 sessions (was capped at 10)
 
@@ -34,7 +34,7 @@ Dump a session's deep summary + patterns + key files into a markdown file that c
 Space to select multiple sessions. Enter opens them all — each in a new iTerm tab/pane via `osascript`. Get your whole workspace back in one shot after a crash.
 
 ### Auto-Resume on Crash Recovery
-Detect macOS crash recovery (or iTerm relaunch) and auto-launch cc-restore. Could be a LaunchAgent plist or an iTerm trigger script that checks if sessions were recently active but no Claude processes are running.
+Detect macOS crash recovery (or iTerm relaunch) and auto-launch claude-resume. Could be a LaunchAgent plist or an iTerm trigger script that checks if sessions were recently active but no Claude processes are running.
 
 ### s — Session Stats Dashboard
 Aggregate view across all cached sessions:
@@ -104,10 +104,10 @@ Show the score in the list view. Track your average over time.
 ### iTerm Integration
 - Custom iTerm status bar component showing active Claude session info
 - iTerm trigger that auto-saves session metadata on tab close
-- Keyboard shortcut to invoke cc-restore from any iTerm tab
+- Keyboard shortcut to invoke claude-resume from any iTerm tab
 
 ### Watch Mode
-`cc-restore --watch` — live-updating dashboard that shows all active Claude sessions across all terminal tabs. See what each one is doing in real time.
+`claude-resume --watch` — live-updating dashboard that shows all active Claude sessions across all terminal tabs. See what each one is doing in real time.
 
 ### Session Merge
 When you crash and resume, you now have two sessions for the same task. Merge their summaries and patterns into one logical unit so the history makes sense.

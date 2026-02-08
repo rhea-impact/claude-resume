@@ -139,7 +139,7 @@ class SessionPickerApp(App):
     # ── Lifecycle ──────────────────────────────────────────
 
     def on_mount(self) -> None:
-        self.title = "cc-restore"
+        self.title = "claude-resume"
         self.sub_title = "Claude Code Session Recovery"
         self._init_search_index()
         self._classify_uncached()
