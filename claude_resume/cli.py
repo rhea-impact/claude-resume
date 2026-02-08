@@ -130,8 +130,10 @@ def main():
         print("  Try: claude-resume --all")
         sys.exit(0)
 
-    # Sort by interruption score (most-interrupted first)
-    sessions.sort(key=lambda s: interruption_score(s), reverse=True)
+    # Sort by date group first (preserves grouping), then by interruption score within each group
+    from .ui import _get_date_group
+    group_order = {"Today": 0, "Yesterday": 1, "Last 7 Days": 2, "Last 30 Days": 3, "Older": 4}
+    sessions.sort(key=lambda s: (group_order.get(_get_date_group(s["mtime"]), 9), -interruption_score(s)))
 
     cache = SessionCache()
     ops = SessionOps(
