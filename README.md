@@ -99,6 +99,13 @@ pip install -e ".[train]"
 python train_classifier.py
 ```
 
+## Roadmap
+
+- [**Resume directly**](https://github.com/rhea-impact/claude-resume/issues/1) — `r` to exec into a session instead of copy-paste
+- [**Multi-select workspace recovery**](https://github.com/rhea-impact/claude-resume/issues/2) — reopen 3 sessions in 3 iTerm tabs at once
+- [**Smart sort by interruption**](https://github.com/rhea-impact/claude-resume/issues/3) — crashed mid-tool-use with uncommitted changes? That one goes first
+- [**Export context briefing**](https://github.com/rhea-impact/claude-resume/issues/4) — markdown dump for when a session is too stale to resume
+
 ## License
 
 MIT
