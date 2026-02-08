@@ -141,8 +141,9 @@ def relative_time(mtime: float) -> str:
 # ── Session discovery ──────────────────────────────────────
 
 
-def _get_last_timestamp(jsonl_file: Path) -> float | None:
-    """Read the last entry's timestamp from a JSONL file."""
+def _get_tail_info(jsonl_file: Path) -> dict:
+    """Read the last few entries from a JSONL file for timestamp and entry type."""
+    info = {"timestamp": None, "last_entry_type": None}
     try:
         with open(jsonl_file, "rb") as f:
             f.seek(0, 2)
@@ -154,15 +155,19 @@ def _get_last_timestamp(jsonl_file: Path) -> float | None:
         for line in reversed(chunk.strip().split("\n")):
             try:
                 obj = json.loads(line)
+                if info["last_entry_type"] is None:
+                    info["last_entry_type"] = obj.get("type", "")
                 ts = obj.get("timestamp")
-                if ts:
+                if ts and info["timestamp"] is None:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    return dt.timestamp()
+                    info["timestamp"] = dt.timestamp()
+                if info["timestamp"] is not None and info["last_entry_type"] is not None:
+                    break
             except (json.JSONDecodeError, ValueError):
                 continue
     except Exception:
         pass
-    return None
+    return info
 
 
 def find_all_sessions() -> list[dict]:
@@ -179,14 +184,15 @@ def find_all_sessions() -> list[dict]:
             stat = jsonl_file.stat()
             if stat.st_size < MIN_SESSION_BYTES:
                 continue
-            last_ts = _get_last_timestamp(jsonl_file)
-            mtime = last_ts if last_ts else stat.st_mtime
+            tail = _get_tail_info(jsonl_file)
+            mtime = tail["timestamp"] if tail["timestamp"] else stat.st_mtime
             sessions.append({
                 "file": jsonl_file,
                 "session_id": jsonl_file.stem,
                 "project_dir": original_path,
                 "mtime": mtime,
                 "size": stat.st_size,
+                "last_entry_type": tail["last_entry_type"],
             })
 
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
@@ -902,3 +908,128 @@ def parse_session(session_file: Path, deep: bool = False) -> tuple[dict, str]:
 
     search_text = " ".join(search_parts)
     return context, search_text
+
+
+# ── Interruption scoring ──────────────────────────────────
+
+
+def interruption_score(session: dict) -> float:
+    """Score how interrupted a session looks (0-100). Higher = more urgent.
+
+    Uses only data available at discovery time (no full parse needed):
+    - last_entry_type: what was the session doing when it stopped?
+    - recency: how recently was it active?
+    - file_size: proxy for invested work
+    """
+    score = 0.0
+    now = time.time()
+
+    # Last entry type: strongest signal of interruption
+    last_type = session.get("last_entry_type", "")
+    if last_type == "user":
+        score += 40  # Typed something, never got a response
+    elif last_type == "progress":
+        score += 35  # Mid-tool-execution
+    elif last_type == "tool_result":
+        score += 30  # Tool finished but assistant never responded
+    elif last_type == "assistant":
+        score += 15  # Normal ending, but could have been mid-thought
+    elif last_type == "summary":
+        score += 5   # Context compaction — long session, probably fine
+
+    # Recency: more recent = more likely to need resuming
+    age_hours = (now - session["mtime"]) / 3600
+    if age_hours < 0.5:
+        score += 30
+    elif age_hours < 1:
+        score += 25
+    elif age_hours < 2:
+        score += 20
+    elif age_hours < 4:
+        score += 15
+    elif age_hours < 8:
+        score += 10
+    elif age_hours < 24:
+        score += 5
+
+    # File size: larger sessions = more invested work
+    size_mb = session["size"] / (1024 * 1024)
+    if size_mb > 10:
+        score += 15
+    elif size_mb > 5:
+        score += 10
+    elif size_mb > 1:
+        score += 5
+
+    return min(score, 100)
+
+
+def has_uncommitted_changes(project_dir: str) -> bool:
+    """Quick check for uncommitted git changes."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=project_dir, timeout=3,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+# ── Context export ────────────────────────────────────────
+
+
+def export_context_md(session: dict, summary: dict | None,
+                      deep: dict | None = None) -> str:
+    """Generate a markdown context briefing for a session."""
+    display = deep or summary or {}
+    title = display.get("title", "Unknown session")
+    project = session["project_dir"]
+    age = relative_time(session["mtime"])
+    duration = display.get("duration_fmt", "")
+    stats_line = f", {duration} session" if duration else ""
+
+    lines = [
+        f"# Session Context: {title}",
+        f"**Project:** {project}",
+        f"**Last active:** {age}{stats_line}",
+        "",
+    ]
+
+    # Goal / objective
+    goal = display.get("objective") or display.get("goal", "")
+    if goal:
+        lines += ["## What was being done", goal, ""]
+
+    # Progress / what was done
+    progress = display.get("progress") or display.get("what_was_done", "")
+    if progress:
+        lines += ["## Progress", progress, ""]
+
+    # Where it left off
+    state = display.get("state", "")
+    if state:
+        lines += ["## Where it left off", state, ""]
+
+    # Next steps (deep only)
+    next_steps = display.get("next_steps", "")
+    if next_steps:
+        lines += ["## Next steps", next_steps, ""]
+
+    # Key files
+    files = display.get("files", [])
+    if files:
+        lines.append("## Key files")
+        for f in files[:8]:
+            lines.append(f"- `{f}`")
+        lines.append("")
+
+    # Decisions (deep only)
+    decisions = display.get("decisions_made", [])
+    if decisions:
+        lines.append("## Decisions made")
+        for d in decisions:
+            lines.append(f"- {d}")
+        lines.append("")
+
+    return "\n".join(lines)

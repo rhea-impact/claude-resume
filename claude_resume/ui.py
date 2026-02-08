@@ -8,7 +8,7 @@ from textual.widgets import Header, Footer, Static, Input, ListView, ListItem
 from textual.message import Message
 from textual import on, events, work
 
-from .sessions import SessionOps, shorten_path, relative_time, get_label
+from .sessions import SessionOps, shorten_path, relative_time, get_label, export_context_md
 
 
 def _get_date_group(mtime: float) -> str:
@@ -61,22 +61,25 @@ class DateHeader(ListItem):
 
 class SessionItem(ListItem):
     """A single session row in the list."""
-    def __init__(self, idx: int, session: dict, summary: dict | None, has_deep: bool = False) -> None:
+    def __init__(self, idx: int, session: dict, summary: dict | None,
+                 has_deep: bool = False, selected: bool = False) -> None:
         super().__init__()
         self.idx = idx
         self.session = session
         self.summary = summary
         self.has_deep = has_deep
+        self.selected = selected
 
     def compose(self) -> ComposeResult:
         title = self.summary.get("title", "Unknown") if self.summary else "Summarizing..."
         short_path = shorten_path(self.session["project_dir"])
         age = relative_time(self.session["mtime"])
         badge = " [bold magenta]◆[/]" if self.has_deep else ""
+        check = "[bold green]✓[/] " if self.selected else "  "
         if self.summary:
-            yield Static(f"[bold]{title}[/]{badge}\n[cyan]{short_path}[/]  [dim]{age}[/]")
+            yield Static(f"{check}[bold]{title}[/]{badge}\n  [cyan]{short_path}[/]  [dim]{age}[/]")
         else:
-            yield Static(f"[bold yellow]{title}[/] [dim]⟳[/]\n[cyan]{short_path}[/]  [dim]{age}[/]")
+            yield Static(f"{check}[bold yellow]{title}[/] [dim]⟳[/]\n  [cyan]{short_path}[/]  [dim]{age}[/]")
 
 
 class TaskDone(Message):
@@ -115,6 +118,7 @@ class SessionPickerApp(App):
         self._saved_session_idx = 0
         self._skip_permissions = True
         self._show_bots = False
+        self._selected: set[int] = set()  # orig indices of selected sessions
         self._in_preview = False
         self._preview_mode = PreviewMode.SUMMARY
         self._lv_map: dict[int, int] = {}
@@ -127,7 +131,7 @@ class SessionPickerApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield SearchInput(
-            placeholder="/ search  ↑↓←→ navigate  Enter resume  d perms  D dive  p patterns  b bots  Esc quit",
+            placeholder="/ search  r resume  Space select  x export  d perms  D dive  p patterns  b bots  Esc quit",
             id="search",
         )
         with Horizontal(id="main"):
@@ -340,7 +344,8 @@ class SessionPickerApp(App):
             ck = cache.cache_key(session["file"])
             has_deep = cache.get(session["session_id"], ck, "deep_summary") is not None
             self._lv_map[lv_idx] = fi
-            lv.append(SessionItem(idx, session, summary, has_deep=has_deep))
+            lv.append(SessionItem(idx, session, summary, has_deep=has_deep,
+                                  selected=idx in self._selected))
             lv_idx += 1
 
         # Show hidden automated session count
@@ -591,6 +596,19 @@ class SessionPickerApp(App):
 
     @on(ListView.Selected)
     def on_selected(self, event: ListView.Selected) -> None:
+        # If multi-selected, open all selected sessions
+        if self._selected:
+            cmds = []
+            for sel_idx in sorted(self._selected):
+                s = self.sessions[sel_idx]
+                cmd = f"cd {s['project_dir']} && claude --resume {s['session_id']}"
+                if self._skip_permissions:
+                    cmd += " --dangerously-skip-permissions"
+                cmds.append(cmd)
+            self.result_data = ("multi_resume", 0, cmds)
+            self.exit()
+            return
+        # Single session: copy to clipboard
         fi = self._current_filtered_index()
         if fi is not None:
             idx, session, _ = self.filtered_items[fi]
@@ -653,6 +671,14 @@ class SessionPickerApp(App):
                 if result:
                     idx, cmd = result
                     self.result_data = ("select", idx, cmd)
+                    self.exit()
+                event.prevent_default()
+                event.stop()
+            elif event.character == "r":
+                result = self._build_resume_cmd()
+                if result:
+                    idx, cmd = result
+                    self.result_data = ("resume", idx, cmd)
                     self.exit()
                 event.prevent_default()
                 event.stop()
@@ -722,6 +748,63 @@ class SessionPickerApp(App):
                             "[bold yellow]⟳ Analyzing patterns...[/]"
                         )
                         self._start_task("patterns", idx)
+            event.prevent_default()
+            event.stop()
+
+        elif event.character == "r":
+            # Resume directly — exec into the session
+            if self._selected:
+                cmds = []
+                for sel_idx in sorted(self._selected):
+                    s = self.sessions[sel_idx]
+                    cmd = f"cd {s['project_dir']} && claude --resume {s['session_id']}"
+                    if self._skip_permissions:
+                        cmd += " --dangerously-skip-permissions"
+                    cmds.append(cmd)
+                self.result_data = ("multi_resume", 0, cmds)
+            else:
+                result = self._build_resume_cmd()
+                if result:
+                    idx, cmd = result
+                    self.result_data = ("resume", idx, cmd)
+            if self.result_data:
+                self.exit()
+            event.prevent_default()
+            event.stop()
+
+        elif event.key == "space":
+            # Toggle selection for multi-select
+            fi = self._current_filtered_index()
+            if fi is not None:
+                idx = self.filtered_items[fi][0]
+                if idx in self._selected:
+                    self._selected.discard(idx)
+                else:
+                    self._selected.add(idx)
+                self._refresh_list()
+                # Show selection count in subtitle
+                n = len(self._selected)
+                self.sub_title = f"{n} selected — Enter/r to open all" if n else "Claude Code Session Recovery"
+            event.prevent_default()
+            event.stop()
+
+        elif event.character == "x":
+            # Export context briefing to clipboard
+            fi = self._current_filtered_index()
+            if fi is not None:
+                idx, session, summary = self.filtered_items[fi]
+                cache = self._ops.cache
+                ck = cache.cache_key(session["file"])
+                deep = cache.get(session["session_id"], ck, "deep_summary")
+                md = export_context_md(session, summary, deep)
+                import subprocess
+                subprocess.run(["pbcopy"], input=md.encode(), check=True)
+                self.query_one("#preview", Static).update(
+                    f"[bold green]Copied context briefing to clipboard[/]\n\n"
+                    f"[dim]{len(md)} characters of markdown[/]\n\n"
+                    f"───\n\n{md}"
+                )
+                self.query_one("#preview-scroll", VerticalScroll).scroll_home(animate=False)
             event.prevent_default()
             event.stop()
 

@@ -69,7 +69,10 @@ claude-resume --cache-all  # Pre-index all sessions (background, slow)
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Navigate sessions |
+| `r` | Resume directly — exec into the session, no clipboard |
 | `Enter` | Copy resume command to clipboard |
+| `Space` | Select/deselect for multi-resume |
+| `x` | Export context briefing as markdown to clipboard |
 | `→` `←` | Scroll preview pane |
 | `/` | Search across all session content |
 | `d` | Toggle `--dangerously-skip-permissions` |
@@ -81,7 +84,7 @@ claude-resume --cache-all  # Pre-index all sessions (background, slow)
 ## How It Works
 
 1. Scans `~/.claude/projects/` for JSONL session files
-2. Sorts by last activity timestamp
+2. Scores each by interruption severity — sessions that crashed mid-tool-use go first
 3. Summarizes each via `claude -p` (Haiku for speed, cached after first run)
 4. Classifies sessions as interactive or automated using a trained ML model — automated sessions (CI, scripts, subagents) are hidden by default
 5. Presents everything in a [Textual](https://textual.textualize.io/) TUI
@@ -101,10 +104,12 @@ python train_classifier.py
 
 ## Roadmap
 
-- [**Resume directly**](https://github.com/rhea-impact/claude-resume/issues/1) — `r` to exec into a session instead of copy-paste
-- [**Multi-select workspace recovery**](https://github.com/rhea-impact/claude-resume/issues/2) — reopen 3 sessions in 3 iTerm tabs at once
-- [**Smart sort by interruption**](https://github.com/rhea-impact/claude-resume/issues/3) — crashed mid-tool-use with uncommitted changes? That one goes first
-- [**Export context briefing**](https://github.com/rhea-impact/claude-resume/issues/4) — markdown dump for when a session is too stale to resume
+All four launch features are implemented:
+
+- [x] [**Resume directly**](https://github.com/rhea-impact/claude-resume/issues/1) — `r` to exec into a session
+- [x] [**Multi-select workspace recovery**](https://github.com/rhea-impact/claude-resume/issues/2) — Space to select, Enter/r to open all in iTerm tabs
+- [x] [**Smart sort by interruption**](https://github.com/rhea-impact/claude-resume/issues/3) — sessions scored by how interrupted they look
+- [x] [**Export context briefing**](https://github.com/rhea-impact/claude-resume/issues/4) — `x` to copy markdown briefing to clipboard
 
 ## License
 

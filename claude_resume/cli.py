@@ -1,5 +1,6 @@
 """CLI entry point for claude-resume."""
 
+import os
 import subprocess
 import sys
 import termios
@@ -11,6 +12,7 @@ from .sessions import (
     find_recent_sessions,
     get_git_context,
     get_label_deep,
+    interruption_score,
     parse_session,
     relative_time,
     shorten_path,
@@ -37,6 +39,25 @@ Usage:
 
 def _copy_to_clipboard(text: str):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
+
+
+def _open_iterm_tabs(commands: list[str]):
+    """Open each command in a new iTerm tab."""
+    for cmd in commands:
+        # Escape double quotes and backslashes for AppleScript
+        escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'''
+        tell application "iTerm"
+            activate
+            tell current window
+                create tab with default profile
+                tell current session
+                    write text "{escaped}"
+                end tell
+            end tell
+        end tell
+        '''
+        subprocess.run(["osascript", "-e", script], capture_output=True)
 
 
 def _cache_all_sessions():
@@ -109,6 +130,9 @@ def main():
         print("  Try: claude-resume --all")
         sys.exit(0)
 
+    # Sort by interruption score (most-interrupted first)
+    sessions.sort(key=lambda s: interruption_score(s), reverse=True)
+
     cache = SessionCache()
     ops = SessionOps(
         cache=cache,
@@ -135,7 +159,18 @@ def main():
 
     action, idx, cmd = app.result_data
 
-    if action == "select":
+    if action == "resume":
+        # Exec directly into the session — replaces this process
+        print(f"\n  \033[1;32m⟶ Resuming session...\033[0m\n")
+        os.execlp("bash", "bash", "-c", cmd)
+
+    elif action == "multi_resume":
+        # cmd is a list of commands — open each in an iTerm tab
+        cmds = cmd  # it's a list
+        _open_iterm_tabs(cmds)
+        print(f"\n  \033[1;32m✓ Opened {len(cmds)} sessions in iTerm tabs\033[0m\n")
+
+    elif action == "select":
         _copy_to_clipboard(cmd)
         print(f"\n  \033[1;32m✓ Copied to clipboard:\033[0m")
         print(f"    {cmd}\n")
