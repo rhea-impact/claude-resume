@@ -53,6 +53,8 @@ cd claude-resume
 pip install -e .
 ```
 
+This puts `claude-resume` on your PATH immediately. Since it's an editable install (`-e`), pulling updates from the repo takes effect without reinstalling.
+
 Requires Python 3.11+ and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (uses `claude -p` for summaries).
 
 ## Usage
