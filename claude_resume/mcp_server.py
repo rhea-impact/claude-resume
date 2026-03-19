@@ -37,6 +37,26 @@ _TRUNC = 300  # max chars per message/field
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
+def _summary_valid(summary: dict) -> bool:
+    """Reject cached summaries that are garbage (XML blobs, fragments, etc.)."""
+    if not isinstance(summary, dict):
+        return False
+    title = summary.get("title", "")
+    state = summary.get("state", "")
+    # Reject if title looks like XML/HTML (task notifications leak through)
+    for field in (title, state):
+        if isinstance(field, str) and ("<" in field and ">" in field):
+            return False
+    # Reject if title is too short to be useful (random fragments)
+    if isinstance(title, str) and 0 < len(title) < 20 and not summary.get("goal") and not summary.get("what_was_done"):
+        return False
+    # Reject if no meaningful content at all
+    has_content = any(
+        summary.get(k) for k in ("title", "goal", "what_was_done", "state", "files")
+    )
+    return has_content
+
+
 def _find_session(session_id: str) -> dict | None:
     """Find a session by targeted glob — O(1) dirs, not O(N) sessions."""
     # Validate UUID format to prevent glob injection (* ? [] etc)
@@ -111,69 +131,158 @@ def _session_row(s: dict, extra: dict | None = None) -> dict:
     return row
 
 
+def _read_session_bytes(s: dict, chunk_size: int = 1024 * 1024) -> bytes | None:
+    """Read and lowercase a session file. Returns None on error."""
+    try:
+        if s["size"] < chunk_size:
+            return s["file"].read_bytes().lower()
+        parts = []
+        with open(s["file"], "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                parts.append(chunk)
+        return b"".join(parts).lower()
+    except OSError:
+        return None
+
+
+def _extract_snippet(raw: bytes, term: bytes, context_chars: int = 80) -> str:
+    """Extract a short snippet around the first occurrence of term in raw bytes."""
+    idx = raw.find(term)
+    if idx < 0:
+        return ""
+    start = max(0, idx - context_chars)
+    end = min(len(raw), idx + len(term) + context_chars)
+    snippet = raw[start:end]
+    # Try to decode, clean up JSON artifacts
+    try:
+        text = snippet.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    # Strip partial JSON escapes and control chars
+    text = text.replace("\\n", " ").replace("\\t", " ").replace('\\"', '"')
+    text = re.sub(r'["\{\}\[\]\\]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if start > 0:
+        text = "..." + text
+    if end < len(raw):
+        text = text + "..."
+    return text
+
+
 @mcp.tool()
 def search_sessions(query: str, limit: int = 10) -> list[dict]:
-    """Search all Claude Code sessions for a keyword (~3s for 3000 sessions).
+    """Search all Claude Code sessions by keywords (~3s for 5000+ sessions).
 
-    Returns matches ranked by relevance (50% time decay with 7-day half-life +
-    50% normalized √match-count). Use read_session() to drill into a specific
-    result. Resume any session with: claude --resume <id>
+    Query syntax:
+      - Multiple words: AND logic (all must appear). "visa mastercard" finds
+        sessions containing BOTH words.
+      - Quoted phrases: exact match. '"mountain creek"' finds that exact phrase.
+      - Single word: standard search.
+
+    Returns matches ranked by multi-signal relevance:
+      - Term frequency (TF): how often terms appear, with diminishing returns
+      - Term density: matches per KB (favors focused sessions over huge dumps)
+      - Recency: exponential decay with 30-day half-life
+      - Title boost: 3x weight if terms appear in cached session title
+
+    Each result includes a contextual snippet showing where the match occurs.
+    Use read_session() to drill into a result. Resume with: claude --resume <id>
     """
     query = query.strip()
     if not query:
         return []
-    limit = max(1, min(limit, 25))
-    term_bytes = query.lower().encode("utf-8", errors="replace")
+    limit = max(1, min(limit, 50))
+
+    # Parse query: support quoted phrases and individual terms
+    phrases = re.findall(r'"([^"]+)"', query)
+    remaining = re.sub(r'"[^"]*"', '', query).strip()
+    words = [w for w in remaining.lower().split() if w]
+
+    # Build search terms: phrases stay intact, words are individual
+    terms_bytes: list[bytes] = []
+    for phrase in phrases:
+        terms_bytes.append(phrase.lower().encode("utf-8", errors="replace"))
+    for word in words:
+        terms_bytes.append(word.encode("utf-8", errors="replace"))
+
+    if not terms_bytes:
+        return []
+
     all_sessions = find_all_sessions()
 
-    _CHUNK = 1024 * 1024  # 1MB — files under this use read_bytes, over use streaming
-    term_len = len(term_bytes)
-
     def _check(s):
-        try:
-            size = s["size"]
-            if size < _CHUNK:
-                raw = s["file"].read_bytes().lower()
-                if term_bytes not in raw:
-                    return None
-                return (s, raw.count(term_bytes))
-            # Stream large files in overlapping chunks to avoid loading 100MB+ into memory
-            count = 0
-            with open(s["file"], "rb") as f:
-                carry = b""
-                while True:
-                    chunk = f.read(_CHUNK)
-                    if not chunk:
-                        break
-                    block = (carry + chunk).lower()
-                    count += block.count(term_bytes)
-                    # Keep tail overlap to catch matches spanning chunk boundaries
-                    carry = chunk[-(term_len - 1):] if term_len > 1 else b""
-            return (s, count) if count > 0 else None
-        except OSError:
+        raw = _read_session_bytes(s)
+        if raw is None:
             return None
+        # ALL terms must be present (AND logic)
+        per_term_counts = []
+        for term in terms_bytes:
+            c = raw.count(term)
+            if c == 0:
+                return None
+            per_term_counts.append(c)
+        total_count = sum(per_term_counts)
+        # Min count across terms — a session strong in one term but weak in
+        # another should rank lower than one balanced across all terms
+        min_count = min(per_term_counts)
+        # Find best snippet (use the rarest term for most relevant context)
+        rarest_idx = per_term_counts.index(min_count)
+        snippet = _extract_snippet(raw, terms_bytes[rarest_idx])
+        return (s, total_count, min_count, snippet)
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         results = list(pool.map(_check, all_sessions))
 
     matches = [r for r in results if r is not None]
+    if not matches:
+        return []
 
-    # Relevance score: 50% Poisson time decay + 50% √(matches)
-    # Time decay: e^(-λt) where λ gives half-life of ~7 days
+    # Reciprocal Rank Fusion (RRF) scoring
+    # Rank each signal independently, combine via 1/(k+rank).
+    # Outlier-resistant: uses position, not magnitude.
     now = time.time()
-    _LAMBDA = math.log(2) / (7 * 86400)  # 7-day half-life
-    max_sqrt = max((math.sqrt(c) for _, c in matches), default=1) or 1
+    _LAMBDA = math.log(2) / (30 * 86400)  # 30-day half-life
+    _K = 60  # RRF constant (standard value)
 
-    def _score(item):
-        s, count = item
+    # Compute raw signal values for each match
+    signals: list[tuple] = []  # (idx, recency, freq, balance, density, title_hit)
+    for i, item in enumerate(matches):
+        s, total_count, min_count, _snippet = item
         age_s = max(now - s["mtime"], 0)
-        time_score = math.exp(-_LAMBDA * age_s)
-        freq_score = math.sqrt(count) / max_sqrt
-        return 0.5 * time_score + 0.5 * freq_score
+        recency = math.exp(-_LAMBDA * age_s)
+        freq = math.sqrt(total_count)
+        balance = math.sqrt(min_count)
+        density = total_count / max(s["size"], 1)
+        title = _get_title(s["session_id"], s["file"]).lower()
+        title_hit = 1.0 if title and any(t.decode("utf-8", errors="replace") in title for t in terms_bytes) else 0.0
+        signals.append((i, recency, freq, balance, density, title_hit))
 
-    matches.sort(key=_score, reverse=True)
-    matches = matches[:limit]
-    return [_session_row(s, {"matches": count, "score": round(_score((s, count)), 3)}) for s, count in matches]
+    # Build per-signal rankings (higher value = better = rank 1)
+    n = len(signals)
+    rrf_scores = [0.0] * n
+    # Weights per signal (sum to 1.0)
+    weights = [0.25, 0.25, 0.20, 0.15, 0.15]
+    for sig_idx in range(1, 6):  # signals 1-5
+        # Sort by this signal descending
+        ranked = sorted(range(n), key=lambda j: signals[j][sig_idx], reverse=True)
+        for rank, j in enumerate(ranked):
+            rrf_scores[j] += weights[sig_idx - 1] / (_K + rank + 1)
+
+    scored = [(matches[i], rrf_scores[i]) for i in range(n)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    scored = scored[:limit]
+
+    return [
+        _session_row(item[0], {
+            "matches": item[1],
+            "snippet": item[3],
+            "score": round(score, 3),
+        })
+        for item, score in scored
+    ]
 
 
 @mcp.tool()
@@ -295,7 +404,7 @@ def session_summary(session_id: str, force_regenerate: bool = False) -> dict:
         if not cached:
             data = _cache._read(session_id)
             cached = data.get("summary") if isinstance(data.get("summary"), dict) else None
-        if cached:
+        if cached and _summary_valid(cached):
             return {"id": session_id, "source": "cache", **cached}
 
     # Prefer daemon — non-blocking
@@ -666,6 +775,417 @@ def merge_context(
         result["note"] = "No cached summary. Call session_summary() first for richer context, or use mode='messages'."
 
     return result
+
+
+@mcp.tool()
+def session_timeline(
+    session_id: str,
+    limit: int = 50,
+    focus: str = "recent",
+    after: str = "",
+    before: str = "",
+) -> dict:
+    """Extract a structured timeline of milestones from a session.
+
+    Solves the "black box" problem for long sessions — instead of
+    head+tail messages, returns key events: file creates/edits,
+    git commits, user instructions, and significant tool calls.
+
+    Each event has a timestamp, type, and summary. Use this to
+    understand what happened in a 2000+ message session without
+    reading every message.
+
+    Args:
+        limit: Max events to return (10-200, default 50).
+        focus: Sampling strategy when events exceed limit.
+          - "recent": 70% from the tail, 30% from the rest (default).
+            Best for "where did we leave off?"
+          - "even": Evenly spaced across the full session.
+            Best for understanding the whole arc.
+          - "full": No sampling — return all events up to limit,
+            most recent first. Best with after/before filters.
+        after: ISO timestamp — only events after this time.
+          e.g. "2026-03-11" or "2026-03-11T16:00"
+        before: ISO timestamp — only events before this time.
+    """
+    session = _find_session(session_id)
+    if session is None:
+        return {"error": f"Session {session_id[:36]} not found"}
+
+    limit = max(10, min(limit, 200))
+    needs_full_scan = focus == "even" or after or before
+
+    if needs_full_scan:
+        events = _extract_events(session["file"])
+        if isinstance(events, dict):  # error
+            return events
+        if after:
+            events = [e for e in events if e["time"] >= after]
+        if before:
+            events = [e for e in events if e["time"] <= before]
+    else:
+        # Tail-read optimization: only parse enough lines from the end.
+        # For "recent" we want ~limit events from the tail + a few from head.
+        # For "full" we want limit events from the tail.
+        # Over-read by 20x — sessions are ~5% events, 95% progress/thinking/system
+        tail_lines = limit * 20
+        events = _extract_events_tail(session["file"], tail_lines)
+        if isinstance(events, dict):
+            return events
+
+    # Deduplicate consecutive file writes to same path
+    deduped = _dedup_file_events(events)
+    total = len(deduped)
+
+    # Sampling
+    if len(deduped) > limit:
+        if focus == "recent":
+            tail_count = int(limit * 0.7)
+            head_count = limit - tail_count
+            head_events = deduped[:len(deduped) - tail_count]
+            tail_events = deduped[len(deduped) - tail_count:]
+            if len(head_events) > head_count and head_count > 0:
+                step = len(head_events) / head_count
+                head_events = [head_events[int(i * step)] for i in range(head_count)]
+            deduped = head_events + tail_events
+        elif focus == "even":
+            step = len(deduped) / limit
+            deduped = [deduped[int(i * step)] for i in range(limit)]
+        else:  # "full" — most recent first, truncate
+            deduped = list(reversed(deduped[-limit:]))
+
+    return {
+        "id": session_id,
+        "project": shorten_path(session["project_dir"]),
+        "total_events": total,
+        "shown": len(deduped),
+        "focus": focus,
+        "timeline": deduped,
+    }
+
+
+def _dedup_file_events(events: list[dict]) -> list[dict]:
+    """Deduplicate consecutive file writes to the same path."""
+    deduped = []
+    seen_files: set[str] = set()
+    for ev in events:
+        if ev["type"] in ("file_write", "file_create", "file_update"):
+            key = ev["detail"]
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+        else:
+            seen_files.clear()
+        deduped.append(ev)
+    return deduped
+
+
+def _extract_events_tail(session_file: Path, max_lines: int) -> list[dict] | dict:
+    """Read the last N lines of a JSONL file and extract events.
+
+    Seeks to end of file, reads backward in chunks to find line
+    boundaries, then parses forward. Much faster than full scan
+    for "where did we leave off?" queries.
+    """
+    try:
+        file_size = session_file.stat().st_size
+        if file_size == 0:
+            return []
+
+        chunk_size = 256 * 1024  # 256KB chunks
+        lines: list[str] = []
+
+        with open(session_file, "rb") as f:
+            # Read backward in chunks until we have enough lines
+            pos = file_size
+            remainder = b""
+            while pos > 0 and len(lines) < max_lines:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size) + remainder
+                remainder = b""
+
+                # Split into lines
+                raw_lines = chunk.split(b"\n")
+
+                # First element is partial if we're not at file start
+                if pos > 0:
+                    remainder = raw_lines[0]
+                    raw_lines = raw_lines[1:]
+
+                # Decode and collect (reverse to maintain order later)
+                for raw in reversed(raw_lines):
+                    raw = raw.strip()
+                    if raw:
+                        try:
+                            lines.append(raw.decode("utf-8", errors="replace"))
+                        except Exception:
+                            continue
+                        if len(lines) >= max_lines:
+                            break
+
+        # Lines were collected in reverse — flip to chronological
+        lines.reverse()
+
+        # Parse events from these lines
+        return _parse_event_lines(lines)
+
+    except OSError as e:
+        return {"error": f"Could not read session: {e}"}
+
+
+def _parse_event_lines(lines: list[str]) -> list[dict]:
+    """Parse JSONL lines into milestone events. Shared by full and tail readers."""
+    events = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        ts = entry.get("timestamp", "")
+        entry_type = entry.get("type")
+
+        # 1. File creates/updates — from toolUseResult
+        tur = entry.get("toolUseResult")
+        if isinstance(tur, dict) and tur.get("type") in ("create", "update"):
+            fp = tur.get("filePath", "")
+            if fp:
+                events.append({
+                    "time": ts,
+                    "type": "file_" + tur["type"],
+                    "detail": shorten_path(fp),
+                })
+            continue
+
+        # 2. Tool use entries — significant tool calls
+        if entry_type == "assistant":
+            msg = entry.get("message", {})
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name", "")
+                        inp = block.get("input", {})
+                        if name == "Bash":
+                            cmd = inp.get("command", "")
+                            if "git commit" in cmd:
+                                events.append({
+                                    "time": ts,
+                                    "type": "git_commit",
+                                    "detail": _trunc(cmd, 120),
+                                })
+                            elif "git push" in cmd:
+                                events.append({
+                                    "time": ts,
+                                    "type": "git_push",
+                                    "detail": _trunc(cmd, 120),
+                                })
+                        elif name == "Write":
+                            fp = inp.get("file_path", "")
+                            if fp:
+                                events.append({
+                                    "time": ts,
+                                    "type": "file_write",
+                                    "detail": shorten_path(fp),
+                                })
+                        elif name.startswith("mcp__"):
+                            events.append({
+                                "time": ts,
+                                "type": "mcp_call",
+                                "detail": name,
+                            })
+            continue
+
+        # 3. User text messages
+        if entry_type == "user":
+            msg = entry.get("message", {})
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content.strip()) > 5:
+                events.append({
+                    "time": ts,
+                    "type": "user_message",
+                    "detail": _trunc(content.strip(), 150),
+                })
+
+    return events
+
+
+def _extract_events(session_file: Path) -> list[dict] | dict:
+    """Parse full JSONL and extract milestone events. Uses threading for large files."""
+    file_size = session_file.stat().st_size
+
+    # Small files: single-threaded
+    if file_size < 2 * 1024 * 1024:  # < 2MB
+        try:
+            with open(session_file, "r", errors="replace") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            return _parse_event_lines(lines)
+        except OSError as e:
+            return {"error": f"Could not read session: {e}"}
+
+    # Large files: split into chunks, parse in parallel
+    try:
+        with open(session_file, "r", errors="replace") as f:
+            all_lines = [l.strip() for l in f if l.strip()]
+    except OSError as e:
+        return {"error": f"Could not read session: {e}"}
+
+    # Split into ~4 chunks for ThreadPoolExecutor
+    n_chunks = 4
+    chunk_size = max(1, len(all_lines) // n_chunks)
+    chunks = [
+        all_lines[i:i + chunk_size]
+        for i in range(0, len(all_lines), chunk_size)
+    ]
+
+    with ThreadPoolExecutor(max_workers=n_chunks) as pool:
+        results = list(pool.map(_parse_event_lines, chunks))
+
+    # Flatten — already in chronological order since chunks are sequential
+    events = []
+    for chunk_events in results:
+        events.extend(chunk_events)
+    return events
+
+
+
+
+@mcp.tool()
+def session_thread(session_id: str) -> dict:
+    """Follow continuation links to reconstruct a multi-session thread.
+
+    When sessions are continued (via merge_context, bookmarks, or
+    explicit "continued from" messages), this tool traces the chain
+    and returns all linked sessions in chronological order.
+
+    Use this when you suspect a session is part of a longer arc —
+    e.g., the user says "pick up where we left off" and the work
+    spans multiple sessions.
+    """
+    session = _find_session(session_id)
+    if session is None:
+        return {"error": f"Session {session_id[:36]} not found"}
+
+    bookmarks_dir = Path.home() / ".claude" / "bookmarks"
+    all_bookmarks = {}
+    if bookmarks_dir.exists():
+        for bf in bookmarks_dir.glob("*-bookmark.json"):
+            try:
+                data = json.loads(bf.read_text())
+                sid = data.get("session_id", "")
+                if sid:
+                    all_bookmarks[sid] = data
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    # Build thread: walk backward from this session, then forward
+    chain = [session_id]
+    visited = {session_id}
+
+    # Walk backward: check if this session's JSONL mentions merging another
+    _trace_merges(session["file"], chain, visited)
+
+    # Walk forward: check if any bookmark references sessions in our chain
+    changed = True
+    while changed:
+        changed = False
+        for sid, bm in all_bookmarks.items():
+            if sid in visited:
+                continue
+            # Check if this bookmark's session merged any session in our chain
+            s = _find_session(sid)
+            if s is None:
+                continue
+            merged_ids = _find_merged_ids(s["file"])
+            if merged_ids & visited:
+                chain.append(sid)
+                visited.add(sid)
+                changed = True
+
+    # Sort chain chronologically
+    chain_sessions = []
+    for sid in chain:
+        s = _find_session(sid)
+        if s:
+            bm = all_bookmarks.get(sid)
+            row = _session_row(s)
+            if bm:
+                row["lifecycle"] = bm.get("lifecycle_state", "")
+                ctx = bm.get("context", {})
+                if ctx.get("summary"):
+                    row["bookmark_summary"] = _trunc(ctx["summary"], 150)
+                if ctx.get("next_actions"):
+                    row["next_actions"] = ctx["next_actions"][:3]
+            chain_sessions.append(row)
+
+    chain_sessions.sort(key=lambda x: x["date"])
+
+    return {
+        "thread_length": len(chain_sessions),
+        "sessions": chain_sessions,
+    }
+
+
+def _find_merged_ids(session_file: Path) -> set[str]:
+    """Scan a session JSONL for merge_context calls and extract session IDs."""
+    merged = set()
+    try:
+        with open(session_file, "r", errors="replace") as f:
+            for line in f:
+                if "merge_context" not in line and "resume" not in line.lower():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                # Check tool_use for merge_context calls
+                msg = entry.get("message", {})
+                content = msg.get("content", []) if isinstance(msg, dict) else []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            if "merge" in block.get("name", "").lower():
+                                inp = block.get("input", {})
+                                sid = inp.get("session_id", "")
+                                if _UUID_RE.fullmatch(sid):
+                                    merged.add(sid)
+                # Check user text for session IDs near "resume" or "continued"
+                if isinstance(content, str):
+                    lower = content.lower()
+                    if "continued from" in lower or "resume" in lower or "bookmark" in lower:
+                        for m in _UUID_RE.finditer(content):
+                            merged.add(m.group())
+    except OSError:
+        pass
+    return merged
+
+
+def _trace_merges(session_file: Path, chain: list, visited: set) -> None:
+    """Walk backward through merge links."""
+    merged_ids = _find_merged_ids(session_file)
+    for mid in merged_ids:
+        if mid in visited:
+            continue
+        visited.add(mid)
+        chain.append(mid)
+        s = _find_session(mid)
+        if s:
+            _trace_merges(s["file"], chain, visited)
+
+
+# Register data science tools on the same MCP instance
+from .data_science.mcp_tools import register_tools as _register_ds_tools
+_register_ds_tools(mcp)
+
+# Register ADR-001 self-report primitive (report + known_issues)
+from .self_report import register_tools as _register_report_tools
+_register_report_tools(mcp)
 
 
 def main():

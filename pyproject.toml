@@ -14,9 +14,13 @@ dependencies = [
     "textual>=0.40",
     "numpy",
     "mcp>=1.0",
+    "mcp-self-report",
 ]
 
 [project.optional-dependencies]
+local = [
+    "mlx-lm>=0.31",
+]
 train = [
     "pandas",
     "scikit-learn",
@@ -25,3 +29,4 @@ train = [
 [project.scripts]
 claude-resume = "claude_resume.cli:main"
 claude-resume-mcp = "claude_resume.mcp_server:main"
+cr = "claude_resume.cli:main"
