@@ -69,11 +69,11 @@ None of these workflows need a terminal UI. They need the operations underneath 
 1. **The TUI** — a human-facing terminal interface for crash recovery. This is the product.
 2. **The MCP server** — a machine-facing API exposing session operations as tools. This is the forge.
 
-### The Seven Tools
+### The Tools
 
-The MCP server exposes seven tools, each doing one thing:
+The MCP server exposes nine core tools plus a data science tier:
 
-**`search_sessions(query, limit)`** — Full-text search across all session JSONL files. Uses 16-thread parallel scanning with 1MB chunked streaming for large sessions (some are 100MB+). Results ranked by composite relevance: 50% Poisson time decay with 7-day half-life + 50% normalized square-root match count. Searches 3,000 sessions in ~3 seconds.
+**`search_sessions(query, limit)`** — Full-text search across all session JSONL files. Uses 16-thread parallel scanning with 1MB chunked streaming for large sessions (some are 100MB+). Results ranked by Reciprocal Rank Fusion (RRF) across five signals: term frequency, term density, recency (30-day half-life), term balance, and title match (3x boost). Searches 5,000+ sessions in ~3 seconds.
 
 **`read_session(session_id, keyword, limit)`** — Reads actual user/assistant messages. Returns head + tail (first few and last few messages) with optional keyword filtering. Not a summary — the raw conversation.
 
@@ -86,6 +86,12 @@ The MCP server exposes seven tools, each doing one thing:
 **`resume_in_terminal(session_id, fork)`** — Opens a terminal window with `claude --resume <id>`. Tries iTerm2 first via AppleScript, falls back to Terminal.app. With `fork=True`, uses Claude Code's native `--fork-session` flag — creates a new session ID with full conversation history, leaving the original untouched. Like `git branch`.
 
 **`merge_context(session_id, mode, keyword, message_limit)`** — The core cross-session operation. Pulls context from another session into the current one. Three modes: `summary` (AI summary, ~1-2k tokens), `messages` (head + tail conversation, ~1-5k tokens), `hybrid` (both, ~2-4k tokens). Includes bookmark data when available. Returns a formatted markdown block that Claude understands as imported session data.
+
+**`session_timeline(session_id, limit, focus, after, before)`** — Structured timeline of milestones: file creates/edits, git commits, user instructions, significant tool calls. Solves the black box problem for long sessions — understand what happened in 2,000 messages without reading every one. Three focus modes: `recent` (70% tail), `even` (full arc), `full` (most recent first). Supports ISO timestamp filters.
+
+**`session_thread(session_id)`** — Follows continuation links across sessions to reconstruct a multi-session thread. Traces both backward (sessions this one merged from) and forward (sessions that merged this one). Returns the full chain in chronological order.
+
+**Data science tier** (`session_insights`, `session_xray`, `session_report`, `session_data_science`) — Analytics across all sessions: temporal patterns, tool usage, prompting personality, streaks and records. `session_xray` gives a deep per-session breakdown — duration, token usage, conversation branches, edit/revert patterns.
 
 ### Fork and Merge: Version Control for Conversations
 

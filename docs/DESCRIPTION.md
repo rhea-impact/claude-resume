@@ -90,7 +90,7 @@ Bookmarks are stored in `~/.claude/bookmarks/` as JSON files and are also writte
 
 The MCP server is where claude-resume becomes more than a recovery tool. It exposes session operations as tools that any Claude Code session can call:
 
-**`search_sessions(query, limit)`** — Full-text search across all session JSONL files. Uses 16-thread parallel scanning with 1MB chunked streaming for large files (some sessions are 100MB+). Results are ranked by a composite relevance score: 50% Poisson time decay with a 7-day half-life (recent sessions rank higher) + 50% normalized square-root match count (more matches rank higher). Searches 3,000 sessions in ~3 seconds.
+**`search_sessions(query, limit)`** — Full-text search across all session JSONL files. Uses 16-thread parallel scanning with 1MB chunked streaming for large files (some sessions are 100MB+). Results are ranked by Reciprocal Rank Fusion (RRF) across five signals: term frequency, term density (matches per KB), recency (30-day half-life exponential decay), term balance across query words, and title match (3x boost if terms appear in the cached session title). AND logic across all query terms — every word must appear. Searches 5,000+ sessions in ~3 seconds.
 
 **`read_session(session_id, keyword, limit)`** — Reads the actual user/assistant messages from a session. Returns head + tail messages (first few and last few) for quick context, with optional keyword filtering. This is the raw conversation — not a summary, but the actual exchanges.
 
@@ -108,6 +108,12 @@ The MCP server is where claude-resume becomes more than a recovery tool. It expo
 - **`hybrid`** (default): Summary + last few messages (~2-4k tokens). Best of both — you get the structured overview plus the recent conversation thread.
 
 The returned context includes bookmark data (lifecycle state, next actions, uncommitted files) when available, formatted as a markdown block that Claude understands as imported session data.
+
+**`session_timeline(session_id, limit, focus, after, before)`** — Structured timeline of milestones from a session: file creates/edits, git commits, user instructions, significant tool calls. Solves the "black box" problem for long 2,000+ message sessions. Three focus modes: `recent` (70% tail, best for "where did we leave off?"), `even` (full arc sampling), `full` (most recent first). Supports ISO timestamp filters for `after`/`before`.
+
+**`session_thread(session_id)`** — Follows continuation links to reconstruct a multi-session thread. When sessions are continued via `merge_context` or bookmarks, traces the chain and returns all linked sessions in chronological order. Use when work spans multiple sessions.
+
+**Data science tools** (`session_insights`, `session_xray`, `session_report`, `session_data_science`) — A second tier of tools for analyzing session history at scale. `session_insights` produces deep analytics across all sessions: temporal patterns, project breakdowns, tool usage, prompting personality, streaks and records, predictions. `session_xray` gives a single-session deep breakdown — duration, tool counts, token usage, conversation branches, edit/revert patterns. First call takes 30-60s (parses all JSONL); subsequent calls are cached.
 
 ## The Core Operations: Fork and Merge
 
