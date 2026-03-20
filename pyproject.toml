@@ -10,11 +10,10 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
-    "claude-session-commons @ git+ssh://git@github.com/eidos-agi/claude-session-commons.git",
+    "claude-session-commons>=0.1.0",
     "textual>=0.40",
     "numpy",
     "mcp>=1.0",
-    "mcp-self-report @ git+ssh://git@github.com/eidos-agi/mcp-self-report.git",
 ]
 
 [project.optional-dependencies]

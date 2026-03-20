@@ -1285,9 +1285,6 @@ def _trace_merges(session_file: Path, chain: list, visited: set) -> None:
 from .data_science.mcp_tools import register_tools as _register_ds_tools
 _register_ds_tools(mcp)
 
-# Register ADR-001 self-report primitive (report + known_issues)
-from .self_report import register_tools as _register_report_tools
-_register_report_tools(mcp)
 
 
 def main():
