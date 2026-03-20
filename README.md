@@ -164,6 +164,7 @@ Ranked by a multi-signal Reciprocal Rank Fusion score:
 - **Term frequency** — how often the terms appear (with diminishing returns)
 - **Term density** — matches per KB (favors focused sessions over large dumps)
 - **Recency** — exponential decay with 30-day half-life
+- **Term balance** — penalizes sessions strong in one query word but weak in others
 - **Title boost** — 3x weight if terms appear in the cached session title
 
 Returns each result with a contextual snippet showing where the match occurs.
