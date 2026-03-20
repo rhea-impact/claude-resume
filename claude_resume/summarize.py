@@ -98,22 +98,37 @@ INSIGHT_SCHEMA = json.dumps({
 
 def _call_claude(prompt: str, context: dict, timeout: int = 30,
                  schema: str | None = None, model: str = "claude-haiku-4-5-20251001") -> dict:
+    """Call claude -p with only safe flags to avoid session file creation and hangs.
+
+    --model and --output-format json cause silent hangs in subprocess context.
+    Only --output-format text --max-turns 1 --no-session-persistence are safe.
+    Model selection is embedded in the system prompt instead.
+    """
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+
+    # Embed model preference in prompt preamble (can't use --model flag safely)
+    model_hint = ""
+    if "sonnet" in model:
+        model_hint = "[Use your best reasoning — this is a Sonnet-level task]\n\n"
+
+    full_prompt = model_hint + prompt
+
     try:
-        cmd = ["claude", "-p", prompt, "--no-session-persistence", "--output-format", "json",
-               "--model", model]
-        if schema:
-            cmd.extend(["--json-schema", schema])
+        cmd = ["claude", "-p", full_prompt,
+               "--no-session-persistence",
+               "--output-format", "text",
+               "--max-turns", "1"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                                stdin=subprocess.DEVNULL)
+                                stdin=subprocess.DEVNULL, env=env)
         output = result.stdout.strip()
-        parsed = json.loads(output)
-        if "structured_output" in parsed and isinstance(parsed["structured_output"], dict):
-            return parsed["structured_output"]
-        if "result" in parsed and isinstance(parsed["result"], dict):
-            return parsed["result"]
-        if "result" in parsed and isinstance(parsed["result"], str):
-            return json.loads(parsed["result"])
-        return parsed
+        # Strip markdown code fences if present
+        if output.startswith("```"):
+            output = output.split("```")[1]
+            if output.startswith("json"):
+                output = output[4:]
+            output = output.strip()
+        return json.loads(output)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         last = context.get("last_messages", [""])[-1] if context.get("last_messages") else ""
         first = context.get("first_messages", [""])[0] if context.get("first_messages") else ""

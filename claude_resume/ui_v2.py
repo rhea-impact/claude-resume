@@ -399,6 +399,27 @@ def _extract_window_context(filepath) -> dict[str, str]:
 
 
 
+def _window_summary_adapter(context: str) -> str:
+    """Generate a window summary from context text.
+
+    Adapter — swap this implementation when a local model is ready.
+    Currently: extract the last meaningful user message from the context (~500 chars).
+    Future: call local ONNX/GGUF model here, no claude -p, no network.
+    """
+    # Pull last user: line from context
+    last_user = ""
+    for line in reversed(context.splitlines()):
+        line = line.strip()
+        if line.lower().startswith("user:"):
+            last_user = line[5:].strip()
+            break
+    text = last_user or context.strip()
+    # Trim to ~500 chars at a word boundary
+    if len(text) > 500:
+        text = text[:500].rsplit(" ", 1)[0] + "…"
+    return text or "no activity"
+
+
 def _summarize_single_window(
     key: str,
     context: str,
@@ -406,55 +427,13 @@ def _summarize_single_window(
     cache: SessionCache,
     filepath,
 ) -> str:
-    """Generate ML summary for ONE time window. Returns the summary string.
+    """Generate summary for ONE time window. Returns the summary string.
     Writes to cache incrementally (merges into existing window_summaries dict).
     """
     if not context:
         return "no activity"
 
-    context = _cap_context(context)
-    label_map = {"5m": "LAST 5 MINUTES", "30m": "LAST 30 MINUTES", "2h": "LAST 2 HOURS"}
-    label = label_map.get(key, key)
-
-    prompt = f"""Summarize what was happening in a Claude Code session during the {label}.
-Write ONE sentence (max 15 words). Focus on the WHAT — name the feature, bug, or file.
-If no activity, say "no activity". Return ONLY the summary, no prefix.
-
---- {label} ---
-{context}
-"""
-
-    output = ""
-
-    # Try local Gemma 2B first
-    try:
-        from .local_llm import is_available, generate
-        if is_available():
-            output = generate(prompt, max_tokens=60)
-    except Exception:
-        output = ""
-
-    # Fallback to claude -p haiku
-    if not output or len(output.strip()) < 3:
-        try:
-            import subprocess as _sp
-            result = _sp.run(
-                ["claude", "-p", "--model", "haiku", prompt],
-                capture_output=True, text=True, timeout=30,
-                env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "cli"},
-            )
-            output = result.stdout.strip()
-        except (_sp.TimeoutExpired, FileNotFoundError, OSError):
-            output = "summary failed"
-
-    # Clean up — remove any prefix like "5m:" the model might echo back
-    summary = output.strip().split("\n")[0].strip()
-    for prefix in ("5m:", "30m:", "2h:"):
-        if summary.lower().startswith(prefix):
-            summary = summary[len(prefix):].strip()
-
-    if not summary:
-        summary = "no activity"
+    summary = _window_summary_adapter(_cap_context(context))
 
     # Merge into cached window_summaries dict
     ck = cache.cache_key(filepath)
