@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-claude-resume token budget analysis.
+resume-resume token budget analysis.
 
-Thesis: claude-resume spends cheap Haiku tokens to save expensive Sonnet/Opus
+Thesis: resume-resume spends cheap Haiku tokens to save expensive Sonnet/Opus
 tokens. This script measures actual usage and estimates the net token impact
 for a Claude Max subscriber.
 
@@ -10,7 +10,7 @@ Two hard problems:
   1. Claude Max doesn't publish a monthly token limit — we back-calculate it
      from known rate limits and pricing.
   2. "Tokens saved" requires estimating what context re-establishment costs
-     without claude-resume — inherently a model, not a measurement.
+     without resume-resume — inherently a model, not a measurement.
 
 We show our math so you can tune the assumptions.
 """
@@ -50,7 +50,7 @@ HAIKU_TO_SONNET_OUTPUT = SONNET_OUT / HAIKU_OUT  # 12x
 #
 CLAUDE_MAX_MONTHLY_SONNET_TOKENS = 13_000_000  # conservative estimate
 
-# ── claude-resume token cost estimates per operation ───────────────────────────
+# ── resume-resume token cost estimates per operation ───────────────────────────
 
 # Haiku summary: session context in, summary out
 SUMMARY_INPUT_TOKENS  = 1_200
@@ -106,7 +106,7 @@ def load_cache_files():
 
 def scan_all_sessions_for_mcp_usage() -> dict:
     """
-    Scan ALL session JSONL files for claude-resume MCP tool calls.
+    Scan ALL session JSONL files for resume-resume MCP tool calls.
     Uses a fast byte-level pre-filter before parsing JSON.
     """
     if not PROJECTS_DIR.exists():
@@ -121,11 +121,11 @@ def scan_all_sessions_for_mcp_usage() -> dict:
     hits = 0
     for i, jsonl in enumerate(all_jsonl):
         if i % 1000 == 0 and i > 0:
-            print(f"  {i:,}/{total:,} scanned, {hits} sessions with claude-resume usage…", flush=True)
+            print(f"  {i:,}/{total:,} scanned, {hits} sessions with resume-resume usage…", flush=True)
         try:
             raw = jsonl.read_bytes()
             # Pre-filter: skip anything that can't possibly have our tools
-            if not any(t.encode() in raw for t in ["search_sessions", "merge_context", "boot_up", "session_summary", "claude-resume"]):
+            if not any(t.encode() in raw for t in ["search_sessions", "merge_context", "boot_up", "session_summary", "resume-resume"]):
                 continue
             hits += 1
             with open(jsonl, "r", errors="replace") as fh:
@@ -180,7 +180,7 @@ def pct_of_max(tokens: int) -> str:
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def main():
-    print("\n━━━ claude-resume: token budget analysis ━━━\n")
+    print("\n━━━ resume-resume: token budget analysis ━━━\n")
 
     # 1. Cache
     print("Loading summary cache…")
@@ -199,14 +199,14 @@ def main():
         print(f"  {month}  {bar:<36}  {counts['interactive']} human / {counts['total']} total")
 
     # 2. Actual MCP usage
-    print("\nScanning ALL sessions for claude-resume MCP calls…")
+    print("\nScanning ALL sessions for resume-resume MCP calls…")
     tool_counts = scan_all_sessions_for_mcp_usage()
 
     searches    = tool_counts.get("search_sessions", 0) + tool_counts.get("mcp__resume-resume__search_sessions", 0)
     merges      = tool_counts.get("merge_context", 0)   + tool_counts.get("mcp__resume-resume__merge_context", 0)
     total_calls = sum(tool_counts.values())
 
-    print(f"\n  Total claude-resume MCP calls found: {total_calls:,}")
+    print(f"\n  Total resume-resume MCP calls found: {total_calls:,}")
     if tool_counts:
         for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
             bar = "█" * min(30, count)
@@ -219,7 +219,7 @@ def main():
 
     # ── Token math ────────────────────────────────────────────────────────────
 
-    print("\n━━━ Token budget: what claude-resume COSTS ━━━")
+    print("\n━━━ Token budget: what resume-resume COSTS ━━━")
     print(f"\n  (Claude Max estimated monthly budget: ~{fmt_tok(CLAUDE_MAX_MONTHLY_SONNET_TOKENS)} Sonnet tokens)")
     print(f"   Methodology: 5x Pro rate limits × avg exchange size × 33 sessions/month\n")
 
@@ -253,7 +253,7 @@ def main():
 
     # ── Token savings ─────────────────────────────────────────────────────────
 
-    print("\n━━━ Token budget: what claude-resume SAVES ━━━\n")
+    print("\n━━━ Token budget: what resume-resume SAVES ━━━\n")
     print(f"  Each merge_context replaces ~{fmt_tok(MANUAL_REESTABLISH_TOKENS)} tokens of manual re-explanation")
     print(f"  Each search_sessions replaces ~{fmt_tok(MANUAL_SEARCH_TOKENS)} tokens of dead-end exploration\n")
 

@@ -121,7 +121,7 @@ Run `/bookmark` inside any Claude Code session to capture lifecycle state (`done
 ## Related
 
 - [claude-session-commons](https://github.com/eidos-agi/claude-session-commons) — Shared session parsing, caching, and classification used by this repo and others
-- [claude-resume-duet](https://github.com/eidos-agi/claude-resume-duet) — Web UI companion with session browser and `resume-resume://` URL scheme handler
+- [resume-resume-duet](https://github.com/eidos-agi/resume-resume-duet) — Web UI companion with session browser and `resume-resume://` URL scheme handler
 
 ## License
 
