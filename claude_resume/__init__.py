@@ -16,7 +16,7 @@ from .sessions import (
     relative_time,
     shorten_path,
 )
-from .summarize import analyze_patterns, summarize_deep, summarize_quick
+from .summarize import analyze_patterns, auto_tier, summarize_deep, summarize_insight, summarize_quick
 from .ui import SessionPickerApp
 
 __all__ = [
@@ -36,6 +36,8 @@ __all__ = [
     "quick_scan",
     "relative_time",
     "shorten_path",
+    "auto_tier",
     "summarize_deep",
+    "summarize_insight",
     "summarize_quick",
 ]

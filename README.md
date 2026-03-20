@@ -20,6 +20,13 @@
 
 Add it to Claude Code and every session on your machine can search, read, and merge your full session history — in plain English.
 
+```bash
+pip install -e .
+claude mcp add claude-resume -- claude-resume-mcp
+```
+
+Or manually in your MCP config:
+
 ```json
 {
   "mcpServers": {

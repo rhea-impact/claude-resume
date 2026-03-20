@@ -123,18 +123,7 @@ Free. Open source. MIT.
 git clone https://github.com/eidos-agi/claude-resume
 cd claude-resume
 pip install -e .
-```
-
-Add to Claude Code:
-
-```json
-{
-  "mcpServers": {
-    "claude-resume": {
-      "command": "claude-resume-mcp"
-    }
-  }
-}
+claude mcp add claude-resume -- claude-resume-mcp
 ```
 
 Your sessions stop being islands. They start being a graph.

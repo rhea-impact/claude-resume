@@ -1,7 +1,24 @@
-"""AI-powered session summarization via claude -p."""
+"""AI-powered session summarization via claude -p.
+
+Three tiers:
+  Tier 1 — Quick (Haiku):    Always auto-generated. ~1,500 tokens. Title, goal, state, files.
+  Tier 2 — Deep  (Haiku):    On demand for important sessions. ~3,000 tokens. Adds decisions, next steps.
+  Tier 3 — Insight (Sonnet): Explicit only. ~6,000 tokens. Architecture map, blockers, confidence, patterns.
+
+Smart auto-selection triggers Tier 2 when:
+  - Session has >40 user messages
+  - Uncommitted git changes exist
+  - Session JSONL is >500KB (long session)
+
+Tier 3 is always explicit.
+"""
 
 import json
 import subprocess
+
+# ── Tier thresholds for auto-promotion ────────────────────────────────────────
+TIER2_MSG_THRESHOLD  = 40    # promote if user sent ≥ this many messages
+TIER2_SIZE_THRESHOLD = 500_000  # promote if JSONL ≥ 500KB
 
 QUICK_SCHEMA = json.dumps({
     "type": "object",
@@ -55,10 +72,35 @@ PATTERNS_SCHEMA = json.dumps({
 })
 
 
-def _call_claude(prompt: str, context: dict, timeout: int = 30, schema: str | None = None) -> dict:
+INSIGHT_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {
+        "title":           {"type": "string"},
+        "objective":       {"type": "string"},
+        "progress":        {"type": "string"},
+        "state":           {"type": "string"},
+        "next_steps":      {"type": "string"},
+        "files":           {"type": "array", "items": {"type": "string"}},
+        "decisions_made":  {"type": "array", "items": {"type": "string"}},
+        "architecture":    {"type": "string"},
+        "blockers":        {"type": "array", "items": {"type": "string"}},
+        "confidence":      {"type": "string", "enum": ["high", "medium", "low"]},
+        "session_quality": {"type": "string"},
+        "key_insight":     {"type": "string"},
+    },
+    "required": [
+        "title", "objective", "progress", "state", "next_steps",
+        "files", "decisions_made", "architecture", "blockers",
+        "confidence", "session_quality", "key_insight",
+    ],
+})
+
+
+def _call_claude(prompt: str, context: dict, timeout: int = 30,
+                 schema: str | None = None, model: str = "claude-haiku-4-5-20251001") -> dict:
     try:
         cmd = ["claude", "-p", prompt, "--no-session-persistence", "--output-format", "json",
-               "--model", "claude-haiku-4-5-20251001"]
+               "--model", model]
         if schema:
             cmd.extend(["--json-schema", schema])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
@@ -164,6 +206,76 @@ Return ONLY a JSON object with these fields:
 Return raw JSON only. No markdown, no code fences, no explanation."""
 
     return _call_claude(prompt, context, timeout=90, schema=DEEP_SCHEMA)
+
+
+def summarize_insight(context: dict, project_dir: str, deep_summary: dict,
+                      git: dict | None = None, session_file_size: int = 0) -> dict:
+    """Tier 3 insight summary using Sonnet — explicit only.
+
+    Builds on the Tier 2 deep summary to produce a richer analysis:
+    architecture map, blockers, confidence score, session quality assessment,
+    and the single most important insight from the session.
+    """
+    git_section = ""
+    if git and git.get("is_git_repo"):
+        if git.get("recent_commits"):
+            git_section += f"\nGIT COMMITS THIS SESSION:\n{git['recent_commits']}\n"
+        if git.get("uncommitted_changes"):
+            git_section += f"\nUNCOMMITTED CHANGES:\n{git['uncommitted_changes']}\n"
+
+    size_note = f"\nSession size: {session_file_size // 1024}KB JSONL ({context['total_lines']} lines, {context['total_user_messages']} user messages)"
+
+    prompt = f"""You are a senior engineering lead doing a thorough debrief of a Claude Code session.
+The session was in: {project_dir}
+{size_note}
+
+DEEP SUMMARY (Tier 2 analysis): {json.dumps(deep_summary, indent=2)}
+
+FULL MESSAGE SAMPLES:
+First messages: {json.dumps(context['first_messages'], indent=2)}
+Last messages: {json.dumps(context['last_messages'], indent=2)}
+First assistant: {json.dumps(context['first_assistant'], indent=2)}
+Last assistant: {json.dumps(context['last_assistant'], indent=2)}
+
+ALL TOOLS USED ({len(context['all_tools'])} unique): {', '.join(context['all_tools'][:40])}
+RECENT TOOL SEQUENCE: {', '.join(context['recent_tools'])}
+{git_section}
+
+Return ONLY a JSON object with:
+- "title": Concise, specific title (max 10 words)
+- "objective": The full goal of this session, including the WHY if discernible (2-3 sentences)
+- "progress": Specific milestones reached — name files changed, tests passed, features shipped (3-4 sentences)
+- "state": Exact stopping point — file, function, line if visible; error message if present (1-2 sentences)
+- "next_steps": The single best first action to take on resume, with specific file/function (1-2 sentences)
+- "files": Up to 8 most important file paths (most-modified first)
+- "decisions_made": Up to 5 specific architectural or implementation decisions made (quote exact choices)
+- "architecture": How do the changed components fit together? What pattern or structure was established? (2-3 sentences)
+- "blockers": Array of unresolved issues, errors, or open questions blocking progress (empty array if none)
+- "confidence": "high" if session had clear goal + clear progress, "medium" if goal shifted or partial, "low" if chaotic
+- "session_quality": One sentence describing the efficiency and focus of this session
+- "key_insight": The single most important thing to know about this session — what makes it notable or what you'd tell someone resuming cold
+
+Be surgical and specific. This is for a developer who needs to pick up a thread with zero warm-up.
+Return raw JSON only. No markdown, no code fences."""
+
+    return _call_claude(prompt, context, timeout=120, schema=INSIGHT_SCHEMA,
+                        model="claude-sonnet-4-6")
+
+
+def auto_tier(context: dict, session_file_size: int, git: dict | None = None) -> int:
+    """Pick the appropriate summarization tier based on session characteristics.
+
+    Returns: 1, 2, or 3
+    - Tier 1: Default — fast, cheap, good enough for most sessions
+    - Tier 2: Promoted when session is substantive (many messages or large file or dirty git)
+    - Tier 3: Never auto-selected — always explicit
+    """
+    msgs = context.get("total_user_messages", 0)
+    has_dirty = bool(git and git.get("uncommitted_changes"))
+
+    if msgs >= TIER2_MSG_THRESHOLD or session_file_size >= TIER2_SIZE_THRESHOLD or has_dirty:
+        return 2
+    return 1
 
 
 def analyze_patterns(context: dict, project_dir: str, summary: dict) -> dict:

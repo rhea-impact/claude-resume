@@ -27,7 +27,7 @@ from .sessions import (
     PROJECTS_DIR,
 )
 from claude_session_commons import decode_project_path
-from .summarize import summarize_quick
+from .summarize import summarize_quick, summarize_deep, summarize_insight, auto_tier
 
 mcp = FastMCP("claude-resume")
 
@@ -173,7 +173,7 @@ def _extract_snippet(raw: bytes, term: bytes, context_chars: int = 80) -> str:
 
 
 @mcp.tool()
-def search_sessions(query: str, limit: int = 10) -> list[dict]:
+def search_sessions(query: str, limit: int = 10, include_automated: bool = False) -> list[dict]:
     """Search all Claude Code sessions by keywords (~3s for 5000+ sessions).
 
     Query syntax:
@@ -190,6 +190,19 @@ def search_sessions(query: str, limit: int = 10) -> list[dict]:
 
     Each result includes a contextual snippet showing where the match occurs.
     Use read_session() to drill into a result. Resume with: claude --resume <id>
+
+    Performance optimizations:
+      - Fast path: bulk-loads all cache JSON files (~1KB each) once before
+        searching. Cache files contain pre-extracted search_text and
+        classification, avoiding reads of raw JSONL files (1-5MB each).
+      - ML pre-filter: sessions classified as "automated" are skipped by
+        default (set include_automated=True to include them).
+      - Raw JSONL fallback: used only when no cached search_text is available.
+
+    Parameters:
+      include_automated: If False (default), skip sessions classified as
+        "automated" by the ML classifier. Significantly reduces corpus size
+        for interactive session searches.
     """
     query = query.strip()
     if not query:
@@ -213,7 +226,44 @@ def search_sessions(query: str, limit: int = 10) -> list[dict]:
 
     all_sessions = find_all_sessions()
 
+    # Bulk-load all cache files ONCE before the thread pool (~1KB each vs 1-5MB JSONL).
+    # This single pass replaces per-session JSONL reads for the vast majority of sessions.
+    cache_index: dict[str, dict] = {}
+    if _cache._dir.exists():
+        for cache_file in _cache._dir.glob("*.json"):
+            sid = cache_file.stem
+            try:
+                data = json.loads(cache_file.read_bytes())
+                cache_index[sid] = data
+            except Exception:
+                pass
+
     def _check(s):
+        sid = s["session_id"]
+        cached = cache_index.get(sid)
+
+        # ML pre-filter: skip automated sessions if not requested
+        if cached is not None and not include_automated:
+            if cached.get("classification") == "automated":
+                return None
+
+        # Fast path: use cached search_text (already lowercased plain text)
+        if cached is not None and cached.get("search_text"):
+            raw = cached["search_text"].encode("utf-8", errors="replace")
+            # search_text is already lowercased; ensure terms match
+            per_term_counts = []
+            for term in terms_bytes:
+                c = raw.count(term)
+                if c == 0:
+                    return None
+                per_term_counts.append(c)
+            total_count = sum(per_term_counts)
+            min_count = min(per_term_counts)
+            rarest_idx = per_term_counts.index(min_count)
+            snippet = _extract_snippet(raw, terms_bytes[rarest_idx])
+            return (s, total_count, min_count, snippet)
+
+        # Slow path: read raw JSONL (fallback for uncached sessions)
         raw = _read_session_bytes(s)
         if raw is None:
             return None
@@ -386,11 +436,18 @@ def recent_sessions(hours: int = 24, limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
-def session_summary(session_id: str, force_regenerate: bool = False) -> dict:
+def session_summary(session_id: str, force_regenerate: bool = False,
+                    depth: str = "auto") -> dict:
     """Get or generate an AI summary for a session.
 
-    Returns cached summary instantly. If uncached, queues to the background
-    daemon (returns in ~15s) or generates synchronously (~30s fallback).
+    depth controls summarization tier:
+      "auto"    — smart selection based on session size/messages/git state (default)
+      "quick"   — Tier 1: fast Haiku summary, ~30s if uncached
+      "deep"    — Tier 2: richer Haiku summary with decisions + next steps, ~60s
+      "insight" — Tier 3: Sonnet-powered full analysis with architecture + blockers + confidence, ~90s
+
+    Returns cached summary instantly. If uncached, generates synchronously.
+    Higher tiers are cached separately so re-requesting "quick" doesn't discard "insight".
     """
     session = _find_session(session_id)
     if session is None:
@@ -399,33 +456,78 @@ def session_summary(session_id: str, force_regenerate: bool = False) -> dict:
     session_file = session["file"]
     ck = _cache.cache_key(session_file)
 
-    if not force_regenerate:
+    # Normalize depth
+    depth = depth.lower().strip() if depth else "auto"
+    if depth not in ("auto", "quick", "deep", "insight"):
+        depth = "auto"
+
+    # For auto/quick, check cache first (fast path)
+    if depth in ("auto", "quick") and not force_regenerate:
         cached = _cache.get(session_id, ck, "summary")
         if not cached:
             data = _cache._read(session_id)
             cached = data.get("summary") if isinstance(data.get("summary"), dict) else None
         if cached and _summary_valid(cached):
-            return {"id": session_id, "source": "cache", **cached}
+            # If auto and cached tier is already deep/insight, return it
+            cached_tier = cached.get("_tier", 1)
+            if depth == "auto" or cached_tier >= 1:
+                return {"id": session_id, "source": "cache", "tier": cached_tier, **cached}
 
-    # Prefer daemon — non-blocking
-    if _daemon_alive():
-        _queue_to_daemon(session_id, str(session_file), session["project_dir"])
-        return {
-            "id": session_id,
-            "source": "queued",
-            "note": "Queued to daemon. Call again in ~15s.",
-        }
+    # deep/insight: check their own cache keys
+    if depth in ("deep", "insight") and not force_regenerate:
+        cache_key = f"summary_{depth}"
+        cached = _cache.get(session_id, ck, cache_key)
+        if cached and _summary_valid(cached):
+            return {"id": session_id, "source": "cache", "tier": 2 if depth == "deep" else 3, **cached}
 
-    # Fallback: synchronous generation
+    # Need to generate — always synchronous for tier 2/3 (too heavy for daemon queue)
     context, search_text = parse_session(session_file)
     git = get_git_context(session["project_dir"])
-    summary = summarize_quick(context, session["project_dir"], git)
+    file_size = session_file.stat().st_size if session_file.exists() else 0
 
-    _cache.set(session_id, ck, "summary", summary)
+    # Resolve auto tier
+    if depth == "auto":
+        tier = auto_tier(context, file_size, git)
+    elif depth == "quick":
+        tier = 1
+    elif depth == "deep":
+        tier = 2
+    else:  # insight
+        tier = 3
+
+    if tier == 1:
+        # Prefer daemon for quick summaries — non-blocking
+        if _daemon_alive() and not force_regenerate:
+            _queue_to_daemon(session_id, str(session_file), session["project_dir"])
+            return {
+                "id": session_id,
+                "source": "queued",
+                "tier": 1,
+                "note": "Queued to daemon. Call again in ~15s.",
+            }
+        summary = summarize_quick(context, session["project_dir"], git)
+        summary["_tier"] = 1
+        _cache.set(session_id, ck, "summary", summary)
+    elif tier == 2:
+        quick = summarize_quick(context, session["project_dir"], git)
+        summary = summarize_deep(context, session["project_dir"], quick, git)
+        summary["_tier"] = 2
+        _cache.set(session_id, ck, "summary_deep", summary)
+        # Also cache as "summary" so quick requests benefit from the richer version
+        _cache.set(session_id, ck, "summary", summary)
+    else:  # tier == 3
+        quick = summarize_quick(context, session["project_dir"], git)
+        deep = summarize_deep(context, session["project_dir"], quick, git)
+        summary = summarize_insight(context, session["project_dir"], deep, git, file_size)
+        summary["_tier"] = 3
+        _cache.set(session_id, ck, "summary_insight", summary)
+        _cache.set(session_id, ck, "summary_deep", deep)
+        _cache.set(session_id, ck, "summary", summary)
+
     full = (search_text + f" {session['project_dir']} {session_id}").lower()
     _cache.set(session_id, ck, "search_text", full)
 
-    return {"id": session_id, "source": "generated", **summary}
+    return {"id": session_id, "source": "generated", "tier": tier, **summary}
 
 
 @mcp.tool()
