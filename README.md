@@ -64,13 +64,19 @@ Two things, independently useful:
 
 We built **Eidos**, a multi-agent AI system. In [our benchmark](https://github.com/eidos-agi/cockpit-eidos), Eidos outperformed **Claude Opus 4.6** by **3.6x** in both accuracy and speed on complex tasks with 15+ reasoning chains. Below, we use Claude Resume to pick up where we left off across multiple sessions.
 
-### Searching for a past session in plain English
+### Finding the benchmark where Eidos beat Claude Opus 4.6
 
 > *"use claude-resume to find the eidos test where we beat claude"*
 
-![Claude Resume search example](assets/example-search.png)
+![Claude Resume eidos benchmark search](assets/example-eidos-beat.png)
 
-Claude Resume searches 5,000+ sessions in ~3 seconds and surfaces the exact session — including the benchmark result snippet showing the 3.6x outperformance.
+Claude Resume searches 5,000+ sessions in ~3 seconds and surfaces the exact session — including the snippet showing the 3.6x outperformance result.
+
+### Searching for a past session in plain English
+
+> *"use claude-resume to find the latest chats about eidos philosophy docs"*
+
+![Claude Resume search example](assets/example-search.png)
 
 ### Merging multiple past sessions into this chat
 
