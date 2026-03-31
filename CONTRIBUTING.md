@@ -34,6 +34,34 @@ If you're building tools that AI agents will use, pay special attention to:
 3. **Error messages** — When something fails, the error message must tell the agent what to do next. "Invalid input" is useless. "Expected ISO 8601 date string (e.g., 2026-03-22), got: 'yesterday'" is actionable.
 4. **Typed everything** — Type hints on all public functions. Agents parse types to understand contracts.
 
+## Releasing to PyPI
+
+This repo uses **GitHub Actions trusted publishing** — no PyPI tokens, no `.pypirc`, no `twine`. The workflow is in `.github/workflows/publish.yml`.
+
+**To release:**
+
+```bash
+# 1. Bump version in pyproject.toml
+# 2. Commit and push
+git add pyproject.toml
+git commit -m "release: vX.Y.Z"
+git push origin master
+
+# 3. Tag and push — this triggers the publish
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+GitHub Actions builds the package and publishes to PyPI automatically. That's it.
+
+**Do NOT:**
+- Run `twine upload` locally
+- Store PyPI tokens anywhere
+- Create a `.pypirc` file
+- Try to publish any other way
+
+If the publish workflow fails, check `gh run view --repo eidos-agi/resume-resume` for logs.
+
 ## Pull requests
 
 - Keep PRs focused — one feature or fix per PR
