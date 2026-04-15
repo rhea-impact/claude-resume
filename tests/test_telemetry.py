@@ -187,3 +187,164 @@ async def test_middleware_respects_disable_env(tmp_path: Path, monkeypatch):
     mw = telemetry.TelemetryMiddleware()
     await mw.on_call_tool(FakeCtx(), fake_next)
     assert not (tmp_path / "today.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# Query-side tests (telemetry_query.py)
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta
+from resume_resume import telemetry_query as tq
+
+
+def _write_events(root: Path, day_offset: int, events: list[dict]) -> None:
+    date = (datetime.now(timezone.utc) - timedelta(days=day_offset)).strftime("%Y-%m-%d")
+    target = root / f"{date}.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as f:
+        for e in events:
+            f.write(json.dumps(e) + "\n")
+
+
+def _mk_event(tool: str, duration_ms: float = 10.0, status: str = "ok",
+              args: dict | None = None, result=None, ts_offset_s: int = 0) -> dict:
+    ts = (datetime.now(timezone.utc) - timedelta(seconds=ts_offset_s)).isoformat()
+    return {
+        "ts": ts,
+        "session_id": "s1",
+        "tool": tool,
+        "args": args or {},
+        "duration_ms": duration_ms,
+        "status": status,
+        "error_type": None if status == "ok" else "ValueError",
+        "error_msg": None if status == "ok" else "boom",
+        "result_size": len(json.dumps(result)) if result is not None else 0,
+        "result": result,
+        "pid": 123,
+    }
+
+
+def test_iter_events_reads_across_days(tmp_path: Path):
+    _write_events(tmp_path, 0, [_mk_event("today_tool")])
+    _write_events(tmp_path, 1, [_mk_event("yesterday_tool")])
+    _write_events(tmp_path, 5, [_mk_event("old_tool")])
+
+    got = list(tq.iter_events(days=2, root=tmp_path))
+    tools = {e["tool"] for e in got}
+    assert tools == {"today_tool", "yesterday_tool"}
+
+
+def test_iter_events_skips_bad_lines(tmp_path: Path):
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    (tmp_path / f"{date}.jsonl").write_text(
+        '{"tool": "good"}\ngarbage not json\n{"tool": "also good"}\n'
+    )
+    got = list(tq.iter_events(days=1, root=tmp_path))
+    assert [e["tool"] for e in got] == ["good", "also good"]
+
+
+def test_load_events_filters(tmp_path: Path):
+    _write_events(tmp_path, 0, [
+        _mk_event("a", status="ok"),
+        _mk_event("a", status="error"),
+        _mk_event("b", status="ok"),
+    ])
+    assert len(tq.load_events(days=1, tool="a", root=tmp_path)) == 2
+    assert len(tq.load_events(days=1, tool="a", status="error", root=tmp_path)) == 1
+    assert len(tq.load_events(days=1, status="error", root=tmp_path)) == 1
+
+
+def test_percentile():
+    assert tq._percentile([], 0.5) == 0
+    assert tq._percentile([10], 0.5) == 10
+    assert tq._percentile([1, 2, 3, 4, 5], 0.5) == 3
+    assert tq._percentile([1, 2, 3, 4, 5], 0.95) == pytest.approx(4.8)
+
+
+def test_usage_summary_aggregates():
+    events = [
+        _mk_event("fast", duration_ms=10),
+        _mk_event("fast", duration_ms=20),
+        _mk_event("slow", duration_ms=2000),
+        _mk_event("slow", duration_ms=3000, status="error"),
+        _mk_event("slow", duration_ms=1500),
+    ]
+    rows = tq.usage_summary(events)
+    by_tool = {r["tool"]: r for r in rows}
+    assert by_tool["slow"]["count"] == 3
+    assert by_tool["slow"]["errors"] == 1
+    assert by_tool["slow"]["error_rate"] == pytest.approx(0.3333, abs=1e-3)
+    assert by_tool["fast"]["avg_ms"] == 15
+    # sorted desc by count
+    assert rows[0]["tool"] == "slow"
+
+
+def test_dead_and_slow_and_error_prone():
+    summary = [
+        {"tool": "dead", "count": 1, "errors": 0, "error_rate": 0, "avg_ms": 5, "p50_ms": 5, "p95_ms": 5, "max_ms": 5},
+        {"tool": "slow", "count": 100, "errors": 0, "error_rate": 0, "avg_ms": 50, "p50_ms": 50, "p95_ms": 1500, "max_ms": 2000},
+        {"tool": "buggy", "count": 20, "errors": 5, "error_rate": 0.25, "avg_ms": 10, "p50_ms": 10, "p95_ms": 15, "max_ms": 20},
+    ]
+    assert [r["tool"] for r in tq.dead_tools(summary, threshold=1)] == ["dead"]
+    assert [r["tool"] for r in tq.slow_tools(summary, 1000)] == ["slow"]
+    assert [r["tool"] for r in tq.error_prone_tools(summary, 0.05)] == ["buggy"]
+
+
+def test_abandoned_queries_finds_empty_results():
+    events = [
+        _mk_event("search_sessions", args={"query": "nothing"}, result=[]),
+        _mk_event("search_sessions", args={"query": "hits"}, result=[{"id": 1}]),
+        _mk_event("recent_sessions", result=[]),
+        _mk_event("unrelated_tool", result=[]),
+    ]
+    out = tq.abandoned_queries(events)
+    tools = [e["tool"] for e in out]
+    assert "search_sessions" in tools
+    assert "recent_sessions" in tools
+    assert "unrelated_tool" not in tools
+    assert len(out) == 2
+
+
+def test_bm25_search_ranks_matching_calls():
+    events = [
+        _mk_event("search_sessions", args={"query": "apple"}),
+        _mk_event("search_sessions", args={"query": "banana orange"}),
+        _mk_event("recent_sessions", args={"hours": 24}),
+    ]
+    hits = tq.bm25_search(events, "apple", limit=5)
+    assert hits
+    assert "apple" in json.dumps(hits[0])
+    # every hit has a score attached
+    assert all("score" in h for h in hits)
+
+
+def test_bm25_search_empty_query():
+    assert tq.bm25_search([_mk_event("a")], "") == []
+    assert tq.bm25_search([], "anything") == []
+
+
+def test_session_bundles_groups_bursts():
+    events = [
+        _mk_event("a", ts_offset_s=0, duration_ms=100),
+        _mk_event("b", ts_offset_s=-5, duration_ms=100),
+        _mk_event("c", ts_offset_s=-600, duration_ms=100),
+    ]
+    bundles = tq.session_bundles(events, gap_seconds=30)
+    assert len(bundles) == 2
+    call_counts = sorted(b["call_count"] for b in bundles)
+    assert call_counts == [1, 2]
+
+
+def test_insights_report_shape(tmp_path: Path):
+    _write_events(tmp_path, 0, [
+        _mk_event("search_sessions", duration_ms=5, result=[{"id": 1}]),
+        _mk_event("search_sessions", duration_ms=5, args={"query": "x"}, result=[]),
+        _mk_event("slow_tool", duration_ms=2000),
+        _mk_event("broken_tool", status="error"),
+    ])
+    report = tq.insights_report(days=1, root=tmp_path)
+    assert report["total_calls"] == 4
+    assert report["total_errors"] == 1
+    assert report["distinct_tools"] == 3
+    assert len(report["abandoned_queries"]) >= 1
+    assert any(r["tool"] == "search_sessions" for r in report["usage"])

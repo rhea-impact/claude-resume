@@ -1576,6 +1576,66 @@ except ImportError:
     pass
 
 
+# ---------------------------------------------------------------------------
+# Self-knowledge tools: resume-resume introspects its own MCP usage telemetry.
+# ---------------------------------------------------------------------------
+
+from . import telemetry_query as _tq
+
+
+@mcp.tool()
+def self_insights(days: int = 30) -> dict:
+    """Opinionated report on resume-resume's own MCP usage.
+
+    Returns total calls, per-tool summary (counts, error rate, p50/p95
+    latency), plus callouts for dead tools, slow tools, error-prone tools,
+    and abandoned queries. This is the weekly roadmap-steering tool.
+    """
+    return _tq.insights_report(days=days)
+
+
+@mcp.tool()
+def self_recent_calls(limit: int = 50, tool: str = "") -> list[dict]:
+    """Tail of recent MCP tool calls. Most recent first."""
+    events = _tq.load_events(days=7, tool=tool or None)
+    events.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    return events[:limit]
+
+
+@mcp.tool()
+def self_slow_calls(threshold_ms: int = 1000, days: int = 7) -> list[dict]:
+    """Calls that took longer than `threshold_ms`. Slowest first."""
+    events = _tq.load_events(days=days)
+    slow = [e for e in events if (e.get("duration_ms") or 0) >= threshold_ms]
+    slow.sort(key=lambda e: e.get("duration_ms") or 0, reverse=True)
+    return slow
+
+
+@mcp.tool()
+def self_errors(days: int = 7) -> list[dict]:
+    """Recent failing MCP calls with full context to debug."""
+    events = _tq.load_events(days=days, status="error")
+    events.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    return events
+
+
+@mcp.tool()
+def self_search(query: str, days: int = 30, limit: int = 20) -> list[dict]:
+    """BM25 search over past MCP calls (tool name + args + result + error)."""
+    events = _tq.load_events(days=days)
+    return _tq.bm25_search(events, query, limit=limit)
+
+
+@mcp.tool()
+def self_bundles(days: int = 7, gap_seconds: int = 30) -> list[dict]:
+    """Group contiguous same-session calls into work bundles.
+
+    A bundle is a burst of calls within `gap_seconds` on the same session.
+    Useful for finding slow workflows even when individual calls are fast.
+    """
+    events = _tq.load_events(days=days)
+    return _tq.session_bundles(events, gap_seconds=gap_seconds)
+
 
 def main():
     if "--install" in sys.argv:
