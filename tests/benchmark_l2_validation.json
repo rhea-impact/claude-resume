@@ -1,0 +1,66 @@
+{
+  "validation_date": "2026-04-16",
+  "method": "Run L2-tagged benchmark queries against project_summary for projects with has_l2=true",
+  "projects_with_l2": ["ciso"],
+  "queries": [
+    {
+      "id": "Q16",
+      "query": "Wrike renewal",
+      "l1_status": "MISS",
+      "l1_score": 0.0,
+      "l2_status": "HIT",
+      "l2_topic": "Wrike Renewal & Task Management",
+      "l2_answer": "685 stale tasks being triaged (621 unassigned, 37 onboarding, 23 real estate, 4 security). SCR-002 guardrails created. Overdue task reassignment to Luke (April 30). Batch cancellation pending (90 min planned).",
+      "l2_resolves_l1_miss": true,
+      "notes": "This is the flagship L2 value case: a business question BM25 can't answer because the terms aren't in raw session text, but the AI-generated topic summary captures the context."
+    },
+    {
+      "id": "Q24",
+      "query": "ADR architecture decision",
+      "l1_status": "HIT",
+      "l1_score": 37.3,
+      "l2_status": "PARTIAL",
+      "l2_topic": null,
+      "l2_answer": "No specific ADR topic in ciso L2. L1 found results across other projects. L2 would help if more projects had summaries.",
+      "l2_resolves_l1_miss": false,
+      "notes": "L1 already handles this (weakly). L2 would strengthen it only with broader project coverage."
+    },
+    {
+      "id": "Q25",
+      "query": "ciso compliance",
+      "l1_status": "HIT",
+      "l1_score": 55.3,
+      "l2_status": "HIT",
+      "l2_topic": "Security Documentation & Governance",
+      "l2_answer": "Governance structures and operational playbooks being built. repo-visibility-audit.md playbook, publish-policy.md, SCR FAQ guardrails. Goal: automated checklists that prevent security errors.",
+      "l2_resolves_l1_miss": false,
+      "notes": "Both L1 and L2 answer this. L2 provides richer project-level narrative. Score would improve with L2-boosted ranking."
+    },
+    {
+      "id": "Q26",
+      "query": "cockpit infrastructure",
+      "l1_status": "HIT",
+      "l1_score": 46.3,
+      "l2_status": "N/A",
+      "l2_topic": null,
+      "l2_answer": "cockpit-eidos has 46 sessions but no L2 summary generated yet.",
+      "l2_resolves_l1_miss": false,
+      "notes": "L2 not available for this project. Would need L2 generation for cockpit-eidos to validate."
+    }
+  ],
+  "consumer_validation": {
+    "test": "Can an agent answer 'What is the status of the Wrike renewal?' from L2 without searching sessions?",
+    "project": "ciso",
+    "result": "PASS",
+    "evidence": "project_summary returns topic 'Wrike Renewal & Task Management' with status, narrative, key decisions, and open threads. All needed context is in the summary — no drill-down to individual sessions required.",
+    "latency": "project_summary responds in <200ms (pre-computed)"
+  },
+  "summary": {
+    "l2_resolves_l1_misses": 1,
+    "l2_strengthens_l1_hits": 1,
+    "l2_not_available": 1,
+    "l2_not_applicable": 1,
+    "consumer_validation": "PASS",
+    "recommendation": "L2 summaries work. Generate them for cockpit-eidos (46 sessions), greenmark-cockpit (49 sessions), and reeves (47 sessions) to extend coverage to the most active projects."
+  }
+}
