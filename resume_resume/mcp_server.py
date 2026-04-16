@@ -175,6 +175,69 @@ def _extract_snippet(raw: bytes, term: bytes, context_chars: int = 80) -> str:
     return text
 
 
+def _search_l2_topics(query_tokens: list[str], limit: int = 5) -> list[dict]:
+    """Search L2 project topic summaries for query matches.
+
+    Called as a fallback when BM25 session search returns 0 results.
+    Returns topic-level results the user can drill into via project_summary.
+    """
+    if not query_tokens:
+        return []
+    try:
+        from claude_session_commons.insights import get_db
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT entity_id, title, summary_text, updated_at
+               FROM summary_levels WHERE level = 2"""
+        ).fetchall()
+    except Exception:
+        return []
+
+    from .bm25 import tokenize as _tokenize
+
+    query_set = set(query_tokens)
+    hits = []
+    for r in rows:
+        entity_id, title, summary_text, updated_at = r
+        parts = entity_id.split("::", 1)
+        project_path = parts[0] if len(parts) > 1 else entity_id
+        topic_name = parts[1] if len(parts) > 1 else title
+
+        try:
+            summary = json.loads(summary_text) if isinstance(summary_text, str) else (summary_text or {})
+        except (json.JSONDecodeError, TypeError):
+            summary = {}
+
+        search_text = " ".join(filter(None, [
+            topic_name,
+            summary.get("status", ""),
+            summary.get("narrative", ""),
+            " ".join(summary.get("key_decisions", [])),
+            " ".join(summary.get("open_threads", [])),
+        ]))
+        topic_tokens = set(_tokenize(search_text))
+
+        overlap = query_set & topic_tokens
+        if not overlap:
+            continue
+        score = round(len(overlap) / len(query_set) * 100, 1)
+
+        hits.append({
+            "type": "project_topic",
+            "project": shorten_path(project_path),
+            "project_path": project_path,
+            "topic": topic_name,
+            "score": score,
+            "matched_terms": sorted(overlap),
+            "status": summary.get("status", ""),
+            "narrative": (summary.get("narrative", "") or "")[:200],
+            "updated_at": updated_at,
+        })
+
+    hits.sort(key=lambda x: x["score"], reverse=True)
+    return hits[:limit]
+
+
 @mcp.tool()
 def search_sessions(query: str, limit: int = 10, include_automated: bool = False,
                     hours: int = 0) -> list[dict]:
@@ -348,10 +411,8 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
         proj = shorten_path(s.get("project", ""))
         p.result(title, f"{proj} | score {final:.0f} | {total_count} hits",
                  session_id=s.get("session_id", ""))
-    time.sleep(0.1)  # let socket flush before closing
-    p_ctx.__exit__(None, None, None)
 
-    return [
+    results = [
         _session_row(s, {
             "score": final,
             "hits": total_count,
@@ -359,6 +420,20 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
         })
         for s, total_count, snippet, final, summary_bm25, raw_bm25, recency in scored
     ]
+
+    # L2 fallback: if BM25 found nothing, search project topic summaries.
+    # This catches business-context queries ("Wrike renewal") whose terms
+    # aren't in raw session text but ARE in AI-generated project summaries.
+    if not results:
+        l2_hits = _search_l2_topics(query_tokens, limit)
+        if l2_hits:
+            p.update(f"No session matches; found {len(l2_hits)} project topic(s)", icon="info")
+            results = l2_hits
+
+    time.sleep(0.1)  # let socket flush before closing
+    p_ctx.__exit__(None, None, None)
+
+    return results
 
 
 @mcp.tool()
