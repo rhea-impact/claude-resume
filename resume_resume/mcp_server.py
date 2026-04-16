@@ -176,7 +176,8 @@ def _extract_snippet(raw: bytes, term: bytes, context_chars: int = 80) -> str:
 
 
 @mcp.tool()
-def search_sessions(query: str, limit: int = 10, include_automated: bool = False) -> list[dict]:
+def search_sessions(query: str, limit: int = 10, include_automated: bool = False,
+                    hours: int = 0) -> list[dict]:
     """Search all Claude Code sessions by keywords (~3s for 5000+ sessions).
 
     Query syntax:
@@ -202,6 +203,9 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     Parameters:
       include_automated: If False (default), skip sessions classified as
         "automated" by the ML classifier.
+      hours: If > 0, only search sessions modified within the last N hours.
+        Useful for temporal queries ("what was I doing yesterday" → hours=48).
+        Default 0 = search all sessions.
     """
     from .bm25 import tokenize, build_corpus_stats, score_session
 
@@ -229,6 +233,11 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     query_tokens = tokenize(query)
 
     all_sessions = find_all_sessions()
+
+    # Temporal filter: restrict to sessions within the time window
+    if hours > 0:
+        cutoff = time.time() - hours * 3600
+        all_sessions = [s for s in all_sessions if s["mtime"] >= cutoff]
 
     # Progress HUD — channel per search query
     p_ctx = progress(f"search: {query}")
