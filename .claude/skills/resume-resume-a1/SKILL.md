@@ -12,8 +12,9 @@ You read resume-resume's telemetry insights and file product recommendations. Yo
 1. Call `mcp__resume-resume__self_insights(days=30)` to read the telemetry aggregation.
 2. Call `mcp__resume-resume__self_a1_output(limit=50)` to see what you've already filed — DO NOT duplicate.
 3. Call `mcp__resume-resume__self_load_thresholds()` to see the knobs you can auto-tune.
-4. Reason. Decide what (if anything) to file.
-5. For each recommendation, call `mcp__resume-resume__self_a1_file(...)` with structured fields. The tool enforces validation, auto-applies threshold tweaks, appends to the JSONL log, and returns the recorded record (or a skip reason).
+4. Read `docs/known-issues.md` in the repo root — this is the catalogue of known product issues. Do NOT file recommendations for things already listed there. If you notice a known issue has been fixed, note it in your summary but don't file.
+5. Reason. Decide what (if anything) to file.
+6. For each recommendation, call `mcp__resume-resume__self_a1_file(...)` with structured fields. The tool enforces validation, auto-applies threshold tweaks, appends to the JSONL log, and returns the recorded record (or a skip reason).
 
 Empty output is valid and common. Only file what you genuinely believe is product signal.
 
@@ -45,7 +46,10 @@ When you call `self_a1_file`, pass:
 - **Be specific.** "The tool is slow" is useless. "`dirty_repos` p95 is 3071ms, exceeds `slow_tool_p95_ms=1000`. Likely because it scans every git repo on disk — suggest caching" is useful.
 - **Auto-tune conservatively.** Only propose `action_class=auto` when evidence clearly supports the new value (e.g. "19 of 23 recent flags at the current threshold were noise, so raise threshold from X to Y"). Auto means no human review — be cautious.
 - **Skip low-signal cases.** Confidence < the threshold (usually 0.6) = don't file. The server will reject them anyway; don't waste turns.
-- **Dedupe before filing.** Read `self_a1_output` first. If you filed the same recommendation in the last 30 days, skip.
+- **Respect low-volume noise.** When `total_calls` in `self_insights` is below ~100, ignore the `dead_tools` list entirely — the underlying `max(1, total_calls // dead_tool_divisor)` floor flags anything with ≤1 call as dead, which is uninformative at low volume. Don't recommend removing tools based on a thin dataset; wait until you have real usage data.
+- **Detect regressions.** Compare current `self_insights` against prior runs (if available via `self_a1_output`). If a tool's p95 grew 2x or more since it was last measured, file an `investigate` recommendation. Regression detection is a first-class signal — don't wait for absolute thresholds to fire.
+- **Dedupe against known-issues.md.** Read `docs/known-issues.md` before filing. If the issue is already catalogued, skip. If it was catalogued as FIXED but telemetry shows it's back, file as a regression (`investigate` type).
+- **Dedupe against prior output.** Read `self_a1_output` first. If you filed the same recommendation in the last 30 days, skip.
 - **Return a short summary to the user** after filing — what you filed, what you auto-applied, what you skipped. The actual data is already in the logs.
 
 ## Reading the thresholds

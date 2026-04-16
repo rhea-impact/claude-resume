@@ -33,13 +33,12 @@ truth instead of rediscovering the same problems every run.
   on every session resume. Not fatal, but visible friction every session.
 - **Workaround:** 30-second result cache (29d2f73) makes subsequent calls
   in the same session ~2ms.
-- **Further improvements (not shipped):**
-  1. Skip project dirs not touched in 30+ days (most accumulated Claude
-     Code project dirs are stale).
-  2. Increase `ThreadPoolExecutor` workers above 8 — git status is
-     I/O-bound on small repos.
+- **Further improvements shipped (this commit):**
+  1. ~~Skip project dirs not touched in 30+ days~~ DONE — 63 of 90
+     repos skipped on measured run. Remaining 27 scanned.
+  2. ~~Increase `ThreadPoolExecutor` workers above 8~~ DONE — bumped to 16.
   3. Stale-while-revalidate: return cached result instantly and refresh
-     in background.
+     in background. NOT YET — future work.
 - **Test:** `tests/test_perf_regression.py::test_dirty_repos_cold_under_generous_ceiling`
   and `test_dirty_repos_cached_is_dramatically_faster_than_cold`
 

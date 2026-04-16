@@ -948,17 +948,30 @@ def dirty_repos() -> dict:
 
     all_sessions = find_all_sessions()
 
-    # Collect all unique project directories (no time window — dirty doesn't age out)
+    # Collect unique project directories, skipping stale ones.
+    # A repo not modified in 30+ days is unlikely to have new dirty state
+    # worth scanning — skip it to cut subprocess calls on cold path.
+    _STALE_CUTOFF = 30 * 86400  # 30 days in seconds
+    now_ts = time.time()
     project_dirs = set()
+    skipped_stale = 0
     for s in all_sessions:
         pd = s["project_dir"]
-        if pd and pd != str(Path.home()) and Path(pd).exists():
-            project_dirs.add(pd)
+        if not pd or pd == str(Path.home()):
+            continue
+        p = Path(pd)
+        if not p.exists():
+            continue
+        # Skip repos whose session was last touched > 30 days ago
+        if (now_ts - s.get("mtime", 0)) > _STALE_CUTOFF:
+            skipped_stale += 1
+            continue
+        project_dirs.add(pd)
 
-    # Scan in parallel
+    # Scan in parallel — 16 workers (git status is I/O-bound, not CPU-bound)
     dirty = []
     clean = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=16) as pool:
         futures = {pool.submit(_scan_repo_git, pd): pd for pd in project_dirs}
         for future in futures:
             try:
@@ -988,6 +1001,7 @@ def dirty_repos() -> dict:
         "dirty_count": len(dirty),
         "clean_count": len(clean),
         "total_scanned": len(dirty) + len(clean),
+        "skipped_stale": skipped_stale,
         "cached": False,
     }
     _DIRTY_REPOS_CACHE["data"] = result
