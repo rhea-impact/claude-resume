@@ -39,6 +39,23 @@ _cache = SessionCache()
 _TRUNC = 300  # max chars per message/field
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+# Cached wrapper for find_all_sessions — the shared bottleneck across
+# search_sessions, dirty_repos, and boot_up. Each call scans the filesystem
+# (~1500ms). With a 10s TTL, back-to-back tool calls within a session
+# share the scan result.
+_ALL_SESSIONS_CACHE: dict = {"data": None, "ts": 0.0}
+_ALL_SESSIONS_CACHE_TTL = 10.0
+
+
+def _find_all_sessions_cached() -> list[dict]:
+    now = time.time()
+    if _ALL_SESSIONS_CACHE["data"] is not None and (now - _ALL_SESSIONS_CACHE["ts"]) < _ALL_SESSIONS_CACHE_TTL:
+        return _ALL_SESSIONS_CACHE["data"]
+    result = find_all_sessions()
+    _ALL_SESSIONS_CACHE["data"] = result
+    _ALL_SESSIONS_CACHE["ts"] = time.time()
+    return result
+
 
 def _summary_valid(summary: dict) -> bool:
     """Reject cached summaries that are garbage (XML blobs, fragments, etc.)."""
@@ -295,7 +312,7 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     # Tokenize query for BM25 (separate from byte terms used for matching)
     query_tokens = tokenize(query)
 
-    all_sessions = find_all_sessions()
+    all_sessions = _find_all_sessions_cached()
 
     # Temporal filter: restrict to sessions within the time window
     if hours > 0:
@@ -881,7 +898,7 @@ def boot_up(hours: int = 24) -> dict:
     p = p_ctx.__enter__()
 
     # 1. Find all sessions; split into recent (time-windowed) and all (for repo discovery)
-    all_sessions = find_all_sessions()
+    all_sessions = _find_all_sessions_cached()
     recent = [s for s in all_sessions if s["mtime"] >= cutoff]
     p.update(f"{len(recent)} recent sessions (last {hours}h), {len(all_sessions)} total", icon="search")
 
@@ -1131,7 +1148,7 @@ def dirty_repos() -> dict:
     if cached is not None and (now - _DIRTY_REPOS_CACHE["ts"]) < _DIRTY_REPOS_CACHE_TTL:
         return {**cached, "cached": True, "cache_age_s": round(now - _DIRTY_REPOS_CACHE["ts"], 1)}
 
-    all_sessions = find_all_sessions()
+    all_sessions = _find_all_sessions_cached()
 
     # Collect unique project directories, skipping stale ones.
     # A repo not modified in 30+ days is unlikely to have new dirty state
