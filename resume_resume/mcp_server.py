@@ -1231,6 +1231,23 @@ def dirty_repos() -> dict:
 
     dirty.sort(key=lambda x: x["urgency"], reverse=True)
 
+    # Cross-reference: find the most recent session per dirty repo
+    # so users know which session to resume for each dirty repo.
+    repo_to_session: dict[str, dict] = {}
+    for s in all_sessions:
+        pd = s.get("project_dir", "")
+        if pd and (pd not in repo_to_session or s["mtime"] > repo_to_session[pd]["mtime"]):
+            repo_to_session[pd] = s
+    for d in dirty:
+        full_path = next(
+            (pd for pd in repo_to_session if shorten_path(pd) == d.get("path")),
+            None,
+        )
+        if full_path:
+            s = repo_to_session[full_path]
+            d["last_session_id"] = s["session_id"]
+            d["last_session_date"] = datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
+
     result = {
         "dirty": dirty,
         "dirty_count": len(dirty),
