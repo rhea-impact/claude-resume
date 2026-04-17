@@ -333,22 +333,34 @@ def register_self_tools(mcp_instance):
     # --- Cross-project activity summary ---
 
     @mcp_instance.tool()
-    def my_week(hours: int = 168, min_sessions: int = 1) -> dict:
+    def my_week(hours: int = 168, min_sessions: int = 1,
+                include_automated: bool = False) -> dict:
         """What you shipped across ALL projects in a time window.
 
         Cross-project activity summary — not one project but all of them.
-        Returns per-project session counts, git commit counts, and dirty
-        state. Use for weekly standups, time tracking, or "what did I do?"
+        Returns per-project session counts, git commit counts, estimated
+        hours, and dirty state. Use for standups, time tracking, or
+        "what did I do?"
 
         Parameters:
           hours: Lookback window (default 168 = 1 week).
           min_sessions: Only include projects with at least this many
             sessions in the window (default 1). Set to 2+ to filter noise.
+          include_automated: If False (default), skip sessions classified
+            as "automated" by the ML classifier.
         """
-        from .mcp_server import _find_all_sessions_cached, shorten_path
+        from .mcp_server import _find_all_sessions_cached, _get_cache_index, shorten_path
 
         all_sessions = _find_all_sessions_cached()
         cutoff = time.time() - hours * 3600
+
+        # Filter automated sessions
+        if not include_automated:
+            cache_index = _get_cache_index()
+            all_sessions = [
+                s for s in all_sessions
+                if cache_index.get(s["session_id"], {}).get("classification") != "automated"
+            ]
 
         # Group recent sessions by project
         by_project: dict[str, list] = {}
