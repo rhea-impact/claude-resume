@@ -317,6 +317,52 @@ async def test_project_orient_shape(client):
 
 
 @pytest.mark.asyncio
+async def test_suggest_next_shape(client):
+    r = await client.call_tool("suggest_next", {"hours": 168})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "suggestions" in d
+    assert "count" in d
+    assert isinstance(d["suggestions"], list)
+    for s in d["suggestions"]:
+        assert "project" in s
+        assert "action" in s
+        assert "priority" in s
+
+
+@pytest.mark.asyncio
+async def test_healthy_sessions_shape(client):
+    r = await client.call_tool("healthy_sessions", {"hours": 168, "limit": 3})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "items" in d
+    assert "count" in d
+    for s in d["items"]:
+        assert "health" in s
+
+
+@pytest.mark.asyncio
+async def test_my_week_has_focus_and_health(client):
+    r = await client.call_tool("my_week", {"hours": 168})
+    d = r.data
+    assert "focus_score" in d
+    assert isinstance(d["focus_score"], (int, float))
+    assert 0 <= d["focus_score"] <= 100
+    for p in d.get("projects", []):
+        assert "avg_health" in p
+
+
+@pytest.mark.asyncio
+async def test_what_changed_shape(client):
+    import os
+    r = await client.call_tool("what_changed", {"project": "resume", "hours": 48})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "sessions" in d
+    assert "changelog" in d or "message" in d
+
+
+@pytest.mark.asyncio
 async def test_dirty_repos_shape(client):
     r = await client.call_tool("dirty_repos", {})
     d = r.data
