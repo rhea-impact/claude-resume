@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import telemetry_query as _tq
 from . import meta_ai as _meta
+from .session_utils import filter_automated as _filter_automated
 
 
 # ---------------------------------------------------------------------------
@@ -383,10 +384,7 @@ def register_self_tools(mcp_instance):
         # Filter automated sessions
         if not include_automated:
             cache_index = _get_cache_index()
-            all_sessions = [
-                s for s in all_sessions
-                if cache_index.get(s["session_id"], {}).get("classification") != "automated"
-            ]
+            all_sessions = _filter_automated(all_sessions, cache_index)
 
         matched = [
             s for s in all_sessions
@@ -531,10 +529,7 @@ def register_self_tools(mcp_instance):
         cache_index = _get_cache_index()
 
         if not include_automated:
-            all_sessions = [
-                s for s in all_sessions
-                if cache_index.get(s["session_id"], {}).get("classification") != "automated"
-            ]
+            all_sessions = _filter_automated(all_sessions, cache_index)
 
         # Group recent sessions by project
         by_project: dict[str, list] = {}

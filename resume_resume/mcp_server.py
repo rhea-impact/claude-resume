@@ -656,11 +656,9 @@ def recent_sessions(hours: int = 24, limit: int = 10, project: str = "",
     sessions = find_recent_sessions(hours, max_sessions=fetch_limit)
 
     if not include_automated:
+        from .session_utils import filter_automated
         cache_index = _get_cache_index()
-        sessions = [
-            s for s in sessions
-            if cache_index.get(s["session_id"], {}).get("classification") != "automated"
-        ]
+        sessions = filter_automated(sessions, cache_index)
 
     if project:
         project_lower = project.lower()

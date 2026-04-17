@@ -11,6 +11,19 @@ from datetime import datetime
 from pathlib import Path
 
 
+def filter_automated(sessions: list[dict], cache_index: dict) -> list[dict]:
+    """Remove sessions classified as 'automated' by the ML classifier.
+
+    Shared helper — used by search_sessions, recent_sessions, what_changed,
+    my_week, healthy_sessions, and suggest_next. Extracted to avoid 6
+    copies of the same filter pattern.
+    """
+    return [
+        s for s in sessions
+        if cache_index.get(s.get("session_id", ""), {}).get("classification") != "automated"
+    ]
+
+
 def session_duration_hours(f: Path) -> float:
     """Estimate session duration. Prefers file birthtime (measures current
     file lifespan, conservative). Falls back to JSONL first→last timestamps
