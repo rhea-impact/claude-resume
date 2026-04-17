@@ -430,10 +430,9 @@ def register_self_tools(mcp_instance):
 
         all_sessions = _find_all_sessions_cached()
         cutoff = time.time() - hours * 3600
+        cache_index = _get_cache_index()
 
-        # Filter automated sessions
         if not include_automated:
-            cache_index = _get_cache_index()
             all_sessions = [
                 s for s in all_sessions
                 if cache_index.get(s["session_id"], {}).get("classification") != "automated"
