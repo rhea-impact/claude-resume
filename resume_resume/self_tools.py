@@ -366,6 +366,31 @@ def register_self_tools(mcp_instance):
         except Exception:
             pass
 
+        # Latest bookmark for this project — surfaces blockers + next actions
+        import json as _json2
+        bookmark = None
+        bookmarks_dir = Path.home() / ".claude" / "bookmarks"
+        if bookmarks_dir.is_dir():
+            latest_ts = 0
+            for bf in bookmarks_dir.glob("*-bookmark.json"):
+                try:
+                    data = _json2.loads(bf.read_text())
+                    bp = data.get("project", {}).get("path", "")
+                    if project_lower in bp.lower() and bf.stat().st_mtime > latest_ts:
+                        latest_ts = bf.stat().st_mtime
+                        ctx = data.get("context", {})
+                        bookmark = {}
+                        if data.get("lifecycle_state"):
+                            bookmark["state"] = data["lifecycle_state"]
+                        if ctx.get("next_actions"):
+                            bookmark["next_actions"] = ctx["next_actions"][:5]
+                        if ctx.get("blockers"):
+                            bookmark["blockers"] = ctx["blockers"][:5]
+                        if ctx.get("summary"):
+                            bookmark["summary"] = ctx["summary"][:200]
+                except (ValueError, OSError):
+                    continue
+
         result = {
             "project": project,
             "project_path": project_path,
@@ -378,6 +403,8 @@ def register_self_tools(mcp_instance):
         }
         if topics:
             result["l2_topics"] = topics
+        if bookmark:
+            result["latest_bookmark"] = bookmark
         return result
 
     # --- Cross-project activity summary ---
