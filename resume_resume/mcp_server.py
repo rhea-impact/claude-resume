@@ -1447,6 +1447,23 @@ def merge_context(
         if bookmark.get("uncommitted_files"):
             lines.append(f"**Uncommitted Files:** {', '.join(bookmark['uncommitted_files'])}")
 
+    # Crash context: if no summary and no bookmark, show what Claude was
+    # doing when the session ended — last tool, last assistant message,
+    # duration, message count. Helps the resuming agent pick up smoothly.
+    if not summary and not bookmark:
+        crash_ctx = _extract_crash_context(session["file"])
+        if crash_ctx.get("last_tool") or crash_ctx.get("last_assistant_msg"):
+            lines.append("")
+            lines.append("### Session End State (no bookmark)")
+            if crash_ctx.get("last_tool"):
+                lines.append(f"**Last Tool:** {crash_ctx['last_tool']}")
+            if crash_ctx.get("last_assistant_msg"):
+                lines.append(f"**Claude was saying:** {crash_ctx['last_assistant_msg']}")
+            if crash_ctx.get("duration_estimate"):
+                lines.append(f"**Session Duration:** {crash_ctx['duration_estimate']}")
+            if crash_ctx.get("message_count"):
+                lines.append(f"**Messages:** ~{crash_ctx['message_count']}")
+
     if msgs:
         lines.append("")
         lines.append("### Recent Conversation")
