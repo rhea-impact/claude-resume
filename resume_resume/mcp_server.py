@@ -257,7 +257,7 @@ def _search_l2_topics(query_tokens: list[str], limit: int = 5) -> list[dict]:
 
 @mcp.tool()
 def search_sessions(query: str, limit: int = 10, include_automated: bool = False,
-                    hours: int = 0) -> list[dict]:
+                    hours: int = 0) -> dict:
     """Search all Claude Code sessions by keywords (~3s for 5000+ sessions).
 
     Query syntax:
@@ -289,9 +289,10 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     """
     from .bm25 import tokenize, build_corpus_stats, score_session
 
+    _empty = {"items": [], "count": 0}
     query = query.strip()
     if not query:
-        return []
+        return _empty
     limit = max(1, min(limit, 50))
 
     # Parse query: support quoted phrases and individual terms
@@ -307,7 +308,7 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
         terms_bytes.append(word.encode("utf-8", errors="replace"))
 
     if not terms_bytes:
-        return []
+        return _empty
 
     # Tokenize query for BM25 (separate from byte terms used for matching)
     query_tokens = tokenize(query)
@@ -403,7 +404,7 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     p.update(f"{len(matches)} matches from {total} sessions", icon="done")
     if not matches:
         p_ctx.__exit__(None, None, None)
-        return []
+        return _empty
 
     # BM25 scoring: summary-first with magnitude-based combination
     scored = []
@@ -450,7 +451,7 @@ def search_sessions(query: str, limit: int = 10, include_automated: bool = False
     time.sleep(0.1)  # let socket flush before closing
     p_ctx.__exit__(None, None, None)
 
-    return results
+    return {"items": results, "count": len(results)}
 
 
 @mcp.tool()
