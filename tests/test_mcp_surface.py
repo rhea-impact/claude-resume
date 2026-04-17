@@ -282,6 +282,41 @@ async def test_list_projects_returns_list_or_wrapped(client):
 
 
 @pytest.mark.asyncio
+async def test_merge_context_with_bad_id(client):
+    r = await client.call_tool("merge_context", {"session_id": "nonexistent-id"})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "error" in d
+
+
+@pytest.mark.asyncio
+async def test_session_timeline_with_bad_id(client):
+    r = await client.call_tool("session_timeline", {"session_id": "nonexistent-id"})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "error" in d
+
+
+@pytest.mark.asyncio
+async def test_session_thread_with_bad_id(client):
+    r = await client.call_tool("session_thread", {"session_id": "nonexistent-id"})
+    d = r.data
+    assert isinstance(d, dict)
+    assert "error" in d or "sessions" in d
+
+
+@pytest.mark.asyncio
+async def test_project_orient_shape(client):
+    import os
+    r = await client.call_tool("project_orient", {
+        "project_path": os.getcwd()
+    })
+    d = r.data
+    assert isinstance(d, dict)
+    assert "project" in d
+
+
+@pytest.mark.asyncio
 async def test_dirty_repos_shape(client):
     r = await client.call_tool("dirty_repos", {})
     d = r.data
