@@ -1928,6 +1928,102 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Cross-session project changelog
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def what_changed(project: str, hours: int = 168, limit: int = 20) -> dict:
+    """What happened on a project across sessions in a time window.
+
+    Synthesizes across all sessions for a project — not reading one
+    session, but producing a changelog: which sessions ran, what was
+    each about, what files were touched, what commits landed.
+
+    Use this for standup summaries, handoff context, or "what did I
+    do on X this week."
+
+    Parameters:
+      project: Substring match on project path (case-insensitive).
+        "ciso" matches /Users/.../repos-aic/ciso.
+      hours: Lookback window (default 168 = 1 week).
+      limit: Max sessions to include (default 20).
+    """
+    all_sessions = _find_all_sessions_cached()
+    cutoff = time.time() - hours * 3600
+    project_lower = project.lower()
+
+    # Filter to matching project + time window
+    matched = [
+        s for s in all_sessions
+        if project_lower in s.get("project_dir", "").lower()
+        and s["mtime"] >= cutoff
+    ]
+    matched.sort(key=lambda s: s["mtime"], reverse=True)
+    matched = matched[:limit]
+
+    if not matched:
+        return {
+            "project": project,
+            "hours": hours,
+            "sessions": 0,
+            "message": f"No sessions matching '{project}' in the last {hours} hours.",
+        }
+
+    # Build the changelog: per-session summary + git state
+    import subprocess
+
+    entries = []
+    project_path = matched[0].get("project_dir", "")
+
+    for s in matched:
+        sid = s["session_id"]
+        title = _get_title(sid, s["file"])
+        entry = {
+            "session_id": sid,
+            "date": datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M"),
+            "title": title or "(no summary)",
+            "size_kb": round(s.get("size", 0) / 1024, 1),
+        }
+        entries.append(entry)
+
+    # Git log for the project in the time window
+    git_commits = []
+    if project_path and Path(project_path).is_dir():
+        try:
+            since = datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d")
+            log = subprocess.run(
+                ["git", "log", f"--since={since}", "--oneline", "--format=%h %ar %s", "-20"],
+                cwd=project_path, capture_output=True, text=True, timeout=5,
+            )
+            git_commits = [line.strip() for line in log.stdout.splitlines() if line.strip()]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    # Git dirty state
+    dirty_files = []
+    if project_path and Path(project_path).is_dir():
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=project_path, capture_output=True, text=True, timeout=5,
+            )
+            dirty_files = [line.strip() for line in status.stdout.splitlines() if line.strip()][:15]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    return {
+        "project": project,
+        "project_path": project_path,
+        "hours": hours,
+        "sessions": len(entries),
+        "changelog": entries,
+        "git_commits": git_commits,
+        "git_dirty_files": dirty_files,
+        "git_dirty_count": len(dirty_files),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Self-knowledge + Meta-AI tools (extracted to self_tools.py for file size)
 # ---------------------------------------------------------------------------
 
