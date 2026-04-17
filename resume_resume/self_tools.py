@@ -216,6 +216,46 @@ def register_self_tools(mcp_instance):
         """
         return _meta.a2_scorecard(days=days)
 
+    # --- Session health ranking ---
+
+    @mcp_instance.tool()
+    def healthy_sessions(hours: int = 168, limit: int = 10, min_health: int = 30) -> dict:
+        """Sessions ranked by value density, not just recency.
+
+        Health score (0-100) combines: session duration, file size (message
+        volume), whether a summary exists, and whether a title exists.
+        High-health sessions had meaningful work; low-health sessions are
+        quick queries or crashes.
+
+        Use when you want to find the BEST sessions to resume, not just
+        the most recent ones.
+
+        Parameters:
+          hours: Lookback window (default 168 = 1 week).
+          limit: Max results (default 10).
+          min_health: Minimum health score to include (default 30).
+        """
+        from .mcp_server import _find_all_sessions_cached, _get_cache_index, _session_row
+
+        all_sessions = _find_all_sessions_cached()
+        cutoff = time.time() - hours * 3600
+
+        # Filter by time + automated
+        cache_index = _get_cache_index()
+        sessions = [
+            s for s in all_sessions
+            if s["mtime"] >= cutoff
+            and s.get("project_dir", "") != str(Path.home())
+            and cache_index.get(s["session_id"], {}).get("classification") != "automated"
+        ]
+
+        # Build rows with health scores
+        rows = [_session_row(s) for s in sessions]
+        rows = [r for r in rows if r.get("health", 0) >= min_health]
+        rows.sort(key=lambda r: r.get("health", 0), reverse=True)
+
+        return {"items": rows[:limit], "count": min(len(rows), limit)}
+
     # --- Cross-session project changelog ---
 
     @mcp_instance.tool()

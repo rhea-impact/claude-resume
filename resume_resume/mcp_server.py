@@ -163,13 +163,69 @@ def _get_title(session_id: str, session_file: Path) -> str:
     return summary.get("title", "") if isinstance(summary, dict) else ""
 
 
+def _session_health(s: dict) -> dict:
+    """Score a session's value density from file metadata alone.
+
+    No JSONL reading — uses only stat() and cache presence. Returns a
+    dict with score (0-100) and component signals so callers can filter
+    or sort by health.
+
+    Components:
+    - duration: longer interactive sessions score higher (capped at 2h)
+    - size: larger files = more messages = more work (log scale)
+    - has_summary: cached summary exists = session was worth summarizing
+    - has_title: non-empty title = session had meaningful work
+
+    Score 0-100. >60 = healthy productive session. <20 = noise/quick query.
+    """
+    f = s["file"]
+    sid = s["session_id"]
+    size_bytes = s.get("size", 0)
+
+    # Duration from file timestamps
+    dur_hours = 0.0
+    try:
+        birth = f.stat().st_birthtime
+        dur_hours = max(0, (s["mtime"] - birth)) / 3600
+    except (OSError, AttributeError):
+        pass
+
+    # Size score: log scale, 10KB=0, 100KB=0.3, 1MB=0.6, 10MB=1.0
+    import math as _math
+    size_score = min(1.0, max(0, _math.log10(max(size_bytes, 1)) - 4) / 3)
+
+    # Duration score: 0-2h maps to 0-1, capped
+    dur_score = min(1.0, dur_hours / 2.0) if dur_hours > 0.01 else 0.0
+
+    # Has summary/title (from cache)
+    title = _get_title(sid, f)
+    has_title = bool(title and len(title) > 5)
+    has_summary = bool(_cache._read(sid).get("summary"))
+
+    # Weighted combination
+    score = (
+        0.30 * dur_score +
+        0.25 * size_score +
+        0.25 * (1.0 if has_summary else 0.0) +
+        0.20 * (1.0 if has_title else 0.0)
+    )
+
+    return {
+        "health": round(score * 100, 0),
+        "dur_hours": round(dur_hours, 2),
+        "size_kb": round(size_bytes / 1024, 1),
+    }
+
+
 def _session_row(s: dict, extra: dict | None = None) -> dict:
-    """Standard compact session row. Omits resume_cmd (caller knows the pattern)."""
+    """Standard compact session row with health score."""
+    health = _session_health(s)
     row = {
         "id": s["session_id"],
         "project": shorten_path(s["project_dir"]),
         "date": datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M"),
         "title": _get_title(s["session_id"], s["file"]),
+        "health": health["health"],
     }
     if extra:
         row.update(extra)
